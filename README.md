@@ -108,6 +108,8 @@
 *   `/违禁级别 <none/lite/full>`: 调整当前群的敏感词拦截等级。
 *   `/comfy帮助`: 查看所有可用指令。
 
+> 序号只统计你自己放入 `workflow` 目录的工作流。插件自带的模板 `workflow_api.json` 会保留在目录中，但默认不参与编号，避免 `/comfy_use 4` 这类操作误切到模板。
+
 ---
 
 ## ❓ 常见问题 (FAQ)
@@ -288,6 +290,7 @@ data\plugin_data\astrbot_plugin_comfyui_pro
 - **中文提示词自动转英文 tags**：提示词里含中文时先调用当前会话模型翻译成 Danbooru 风格 tags，失败则回退原文。
 - **正向提示词清理**：自动剔除被误写进正向提示词里的 `low quality` / `watermark` / `bad anatomy` 等负面词。
 - **避免重复绘图**：工具已经出过图时抑制同一轮回复里 `<pic>` 标签的二次自动绘图。
+- **工作流编号排除自带模板**：`workflow_api.json` 是首次安装时从插件目录复制的模板，`/comfy_ls` 与 `/comfy_use` 不再把它算进编号，只在它正好是当前工作流时单独提示一行。
 
 ---
 

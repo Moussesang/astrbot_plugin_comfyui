@@ -521,6 +521,22 @@ class ComfyUIPlugin(Star):
     def _is_workflow_aux_file(filename: str) -> bool:
         return filename.endswith(".steps.json") or filename.endswith(".lora.json")
 
+    # 插件自带的模板工作流：首次安装时由 _init_data_directories() 从
+    # PLUGIN_DIR/workflow 复制到数据目录，不算用户自己的工作流，
+    # 因此默认不参与 /comfy_ls 与 /comfy_use 的编号。
+    _BUILTIN_WORKFLOW_FILES = frozenset({"workflow_api.json"})
+
+    def _selectable_workflow_names(self) -> list:
+        """可编号选择的工作流文件名（排除辅助文件与插件自带模板）。"""
+        if not self.workflow_dir.exists():
+            return []
+        return sorted(
+            f.name
+            for f in self.workflow_dir.glob("*.json")
+            if not self._is_workflow_aux_file(f.name)
+            and f.name.casefold() not in self._BUILTIN_WORKFLOW_FILES
+        )
+
     @staticmethod
     def _strip_comfy_control_tags(text: str, remove_think: bool = False) -> str:
         if not isinstance(text, str):
@@ -1672,11 +1688,8 @@ class ComfyUIPlugin(Star):
             yield event.plain_result("❌ 工作流目录不存在")
             return
 
-        # 排除 .steps.json 文件
-        files = sorted([
-            f.name for f in self.workflow_dir.glob("*.json") 
-            if not self._is_workflow_aux_file(f.name)
-        ])
+        # 排除辅助文件与插件自带模板工作流
+        files = self._selectable_workflow_names()
     
         if not files:
             yield event.plain_result("📂 目录中没有工作流文件")
@@ -1708,6 +1721,9 @@ class ComfyUIPlugin(Star):
                 msg.append(f"   {i}. {f}{steps_info}")
     
         msg.append("")
+        if current_file and current_file not in files:
+            msg.append(f"📌 当前工作流：{current_file}（插件自带模板，不参与编号）")
+            msg.append("")
         msg.append("━━━━━━━━━━━━━━━━━━")
         msg.append("切换：/comfy_use <序号>")
         msg.append("覆盖：/comfy_add <节点ID> <步数>")
@@ -1733,11 +1749,8 @@ class ComfyUIPlugin(Star):
             return
 
         try:
-            # 排除 .steps.json 文件
-            files = sorted([
-                f.name for f in self.workflow_dir.glob("*.json")
-                if not self._is_workflow_aux_file(f.name)
-            ])
+            # 与 /comfy_ls 共用同一份列表，排除辅助文件与插件自带模板
+            files = self._selectable_workflow_names()
         
             index = int(args[1])
             if not (1 <= index <= len(files)):
