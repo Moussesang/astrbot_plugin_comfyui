@@ -51,6 +51,23 @@ class ComfyUIPlugin(Star):
         r'<pic\b(?P<prefix>[^>]*\bprompt=)(?P<quote>["\'])(?P<prompt>.*?)</pic>',
         flags=re.DOTALL | re.IGNORECASE,
     )
+    # 模型（尤其是中文模型）经常把属性引号写成中文/全角引号，正则只认半角引号。
+    # 这里做单字符替换以保持字符串长度不变，便于按 span 删除原文中的标签。
+    _PIC_QUOTE_TRANSLATION = str.maketrans({
+        "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\uff02": '"',
+        "\u300c": '"', "\u300d": '"', "\u300e": '"', "\u300f": '"',
+        "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\uff07": "'",
+    })
+    _NEGATIVE_PROMPT_TAGS = frozenset({
+        "worst quality", "low quality", "normal quality", "lowres", "jpeg artifacts",
+        "bad anatomy", "bad hands", "bad proportions", "bad composition",
+        "extra fingers", "fewer fingers", "missing fingers", "extra digits", "fewer digits",
+        "extra limbs", "extra arms", "extra legs", "extra digit", "fewer digit",
+        "deformed", "disfigured", "poorly drawn face", "poorly drawn hands",
+        "long neck", "watermark", "watermarksignature", "signature", "username",
+        "artist name", "trademark", "text", "logo", "cropped", "error", "ugly",
+        "terrible", "artifacts", "score_1", "score_2", "score_3",
+    })
 
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
@@ -235,7 +252,7 @@ class ComfyUIPlugin(Star):
             if not files:
                 files = ["workflow_api.json"]
 
-            with open(schema_path, 'r', encoding='utf-8') as f:
+            with open(schema_path, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
 
             target = data['workflow_settings']['items']['json_file']
@@ -516,9 +533,22 @@ class ComfyUIPlugin(Star):
             [(item["start"], item["end"]) for item in pic_matches],
         )
         cleaned = re.sub(r"</pic>", "", cleaned, flags=re.IGNORECASE)
+        # 兜底：即使 prompt 里有异常字符导致上面的 span 匹配失败，也不让标签漏到聊天里
+        cleaned = re.sub(r"<pic\b[^>]*>", "", cleaned, flags=re.IGNORECASE)
         if remove_think:
             cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r"</?ctx>", "", cleaned, flags=re.IGNORECASE)
+        # <render template="..."> 只是旧版 HTML 卡片渲染预留的包裹标签，
+        # 当前运行时没有对应的渲染器，不剥离就会跟正文一起发到聊天里。
+        cleaned = re.sub(r"</?render\b[^>]*>", "", cleaned, flags=re.IGNORECASE)
+        # 兜底：模型有时只吐出孤立的闭合/开始标签（没有配对），
+        # 这类残留在分段发送时同样会漏到聊天里，一并清掉。
+        cleaned = re.sub(r"</?think>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</?final>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"<system_reminder>.*?</system_reminder>", "", cleaned, flags=re.DOTALL | re.IGNORECASE
+        )
+        cleaned = re.sub(r"</?system_reminder>", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
 
@@ -646,12 +676,39 @@ class ComfyUIPlugin(Star):
         return cleaned, collected
 
     @classmethod
+    def _normalize_pic_quotes(cls, text: str) -> str:
+        if not isinstance(text, str):
+            return text
+        return text.translate(cls._PIC_QUOTE_TRANSLATION)
+
+    @classmethod
+    def _sanitize_positive_prompt(cls, prompt: str) -> str:
+        """移除被模型误写进正向提示词里的负面词，避免真的画出 text/watermark/畸形手。"""
+        if not isinstance(prompt, str) or not prompt.strip():
+            return prompt
+
+        # 只按未被括号包裹的逗号切分，保留 (tag:1.2) 这类权重语法
+        parts = re.split(r",(?![^()]*\))", prompt)
+        kept = []
+        for part in parts:
+            piece = part.strip()
+            if not piece:
+                continue
+            core = piece.strip("()[]{} ").strip()
+            core = re.sub(r":\s*[\d.]+\s*$", "", core).strip().lower()
+            if core in cls._NEGATIVE_PROMPT_TAGS:
+                continue
+            kept.append(piece)
+        return ", ".join(kept)
+
+    @classmethod
     def _find_pic_prompt_matches(cls, text: str) -> list[dict]:
         if not isinstance(text, str) or not text:
             return []
 
         matches = []
         occupied = []
+        text = cls._normalize_pic_quotes(text)
 
         for match in cls._PIC_PROMPT_TAG_PATTERN.finditer(text):
             start, end = match.span()
@@ -764,6 +821,52 @@ class ComfyUIPlugin(Star):
             if lora_appendix:
                 my_prompt = f"{my_prompt}\n\n{lora_appendix}".strip()
         return my_prompt
+
+    async def _englishize_prompt(self, event: AstrMessageEvent, prompt: str) -> str:
+        """把中文提示词翻译成英文 tags；Anima 的 Qwen 文本编码器对中文几乎无响应。"""
+        if not prompt or not re.search(r"[\u4e00-\u9fff]", prompt):
+            return prompt
+
+        try:
+            provider = self.context.get_using_provider(event.unified_msg_origin)
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 获取翻译模型失败，按原文提交: {e}")
+            return prompt
+        if provider is None:
+            logger.warning("[ComfyUI] 中文提示词需要翻译，但当前没有可用聊天模型，按原文提交")
+            return prompt
+
+        system_prompt = (
+            "You convert Chinese image descriptions into English Danbooru-style tags for an anime image model. "
+            "Output one line of comma-separated English tags only: no Chinese characters, no quotes, "
+            "no explanation, no markdown, no refusal. Cover subject, appearance, clothing, pose/action, "
+            "expression, scene/background, lighting, camera and art style. Keep <lora:...> control tags unchanged."
+        )
+        try:
+            response = await provider.text_chat(prompt=prompt, system_prompt=system_prompt)
+            text = str(getattr(response, "completion_text", "") or "").strip()
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 中文提示词翻译失败，按原文提交: {e}")
+            return prompt
+
+        text = re.sub(r"<think[^>]*>.*?</think>", " ", text, flags=re.S | re.I)
+        text = re.sub(r"```[a-zA-Z]*", " ", text).replace("```", " ")
+        text = re.sub(r"[\u4e00-\u9fff]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip(" \t\r\n,，。;；\"'“”")
+        for prefix in ("prompt:", "Prompt:", "英文提示词：", "tags:"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+        if len(text) < 2 or not re.search(r"[a-zA-Z]", text):
+            logger.warning("[ComfyUI] 中文提示词翻译结果异常，按原文提交")
+            return prompt
+        lowered = text.lower()
+        if any(marker in lowered for marker in ("i can't", "i cannot", "i'm sorry", "sorry,", "unable to")):
+            logger.warning("[ComfyUI] 翻译模型拒绝或无法翻译，按原文提交")
+            return prompt
+        if len(text) > 800:
+            text = text[:800].rsplit(",", 1)[0]
+        logger.info(f"[ComfyUI] 中文提示词已翻译为英文: {text[:160]}")
+        return text
 
     @staticmethod
     def _coerce_conversation_history(raw_history) -> list:
@@ -2264,6 +2367,9 @@ class ComfyUIPlugin(Star):
         if supplemented_entries:
             cleaned_entries = cleaned_entries + supplemented_entries
         if not cleaned_entries:
+            if cleaned_text != full_text:
+                resp.completion_text = cleaned_text
+                resp.result_chain = MessageChain().message(cleaned_text)
             return
 
         # 清理文本供其他插件使用（移除 <pic>、<think>、<ctx> 标签）
@@ -2277,10 +2383,10 @@ class ComfyUIPlugin(Star):
             event._comfy_extracted_prompt = cleaned_entries[0]["prompt"]
             event._comfy_extracted_loras = cleaned_entries[0].get("lora_selections", [])
             logger.info(f"[ComfyUI] 📝 检测到单图模式: {cleaned_prompts[0][:50]}...")
-            # 丢弃绘图提示词，避免污染历史记录上下文
+            # 始终清理可见回复，标签不应出现在聊天里；历史清理由配置单独控制
+            resp.completion_text = cleaned_text
+            resp.result_chain = MessageChain().message(cleaned_text)
             if self.discard_prompt_from_history:
-                resp.completion_text = cleaned_text
-                resp.result_chain = MessageChain().message(cleaned_text)
                 logger.info("[ComfyUI] 🗑️ 已从历史记录中移除绘图提示词")
             return
     
@@ -2294,11 +2400,8 @@ class ComfyUIPlugin(Star):
                 cursor = item["end"]
             parts.append(full_text[cursor:])
         
-            # 检测原始文本中的 <render> 标签信息，用于补全被切割的段落
-            render_match = re.search(r'<render\b[^>]*>', full_text)
-            render_open_tag = render_match.group(0) if render_match else None
-            render_close_tag = "</render>" if render_open_tag else None
-
+            # 旧版曾有 HtmlRender(priority=40) 负责把 <render> 卡片渲染成图片，
+            # 该渲染器在现行版本中不存在，因此这里不再补回标签对，直接剥离。
             segments = []
             prompt_idx = 0
         
@@ -2307,18 +2410,9 @@ class ComfyUIPlugin(Star):
                 text = re.sub(r'</?ctx>', '', text)
                 text = re.sub(r'</pic>', '', text, flags=re.IGNORECASE)
                 text = re.sub(r'<lora\s+picks=".*?"\s*/?>', '', text, flags=re.DOTALL | re.IGNORECASE)
+                text = re.sub(r'</?render\b[^>]*>', '', text, flags=re.IGNORECASE)
                 text = text.strip()
                 if text:
-                    # 如果原文使用了 <render> 标签，确保每个文本段都有完整的标签对
-                    if render_open_tag:
-                        has_open = bool(re.search(r'<render\b', text))
-                        has_close = '</render>' in text
-                        if has_open and not has_close:
-                            text = text + render_close_tag
-                        elif has_close and not has_open:
-                            text = render_open_tag + text
-                        elif not has_open and not has_close:
-                            text = render_open_tag + text + render_close_tag
                     segments.append({"type": "text", "content": text})
                 if prompt_idx < len(cleaned_prompts):
                     segments.append(
@@ -2343,17 +2437,19 @@ class ComfyUIPlugin(Star):
             if segments:
                 event._comfy_segments = segments
                 logger.info(f"[ComfyUI] 📝 检测到多图模式，共 {len(cleaned_prompts)} 张图片")
-                # 丢弃绘图提示词，避免污染历史记录上下文
+                # 始终清理可见回复，标签不应出现在聊天里；历史清理由配置单独控制
+                resp.completion_text = cleaned_text
+                resp.result_chain = MessageChain().message(cleaned_text)
                 if self.discard_prompt_from_history:
-                    resp.completion_text = cleaned_text
-                    resp.result_chain = MessageChain().message(cleaned_text)
-                    logger.info("[ComfyUI] 🗑️ 已从历史记录中移除绘图提示词（多图模式）")            
+                    logger.info("[ComfyUI] 🗑️ 已从历史记录中移除绘图提示词（多图模式）")
 
     # ====== 自动绘图逻辑保持不变 ======
     @filter.on_decorating_result(priority=99)
     async def _auto_paint_from_llm(self, event: AstrMessageEvent):
         """自动绘图 - 阶段1：构建 chain（多图）或启动异步任务（单图）"""
         if getattr(event, "_comfy_auto_painted", False):
+            return
+        if event.get_extra("comfy_tool_generated"):
             return
 
         # 检查是否有多图段落
@@ -2535,6 +2631,8 @@ class ComfyUIPlugin(Star):
                 )
                 return
 
+            prompt = await self._englishize_prompt(event, prompt)
+            prompt = self._sanitize_positive_prompt(prompt)
             logger.info(f"[ComfyUI] 🎨 异步生成开始 | Prompt: {prompt[:50]}...")
             img_data, error_msg = await self.api.generate(prompt, lora_selections=lora_selections)
 
@@ -2672,6 +2770,8 @@ class ComfyUIPlugin(Star):
             if marker:
                 try:
                     logger.info(f"[ComfyUI] 🎨 [{marker.index}/{prompt_count}] 开始生成: {marker.prompt[:50]}...")
+                    marker.prompt = await self._englishize_prompt(event, marker.prompt)
+                    marker.prompt = self._sanitize_positive_prompt(marker.prompt)
                     img_data, error_msg = await self.api.generate(
                         marker.prompt,
                         lora_selections=marker.lora_selections,
@@ -2793,6 +2893,8 @@ class ComfyUIPlugin(Star):
                 yield message
                 return
 
+            prompt = await self._englishize_prompt(event, prompt)
+            prompt = self._sanitize_positive_prompt(prompt)
             logger.info(f"[ComfyUI] 🎨 开始生成 | 用户: {event.get_sender_id()} | Prompt: {prompt[:50]}...")
 
             # 调用 API
@@ -2818,6 +2920,9 @@ class ComfyUIPlugin(Star):
             
             logger.info(f"[ComfyUI] ✅ 图片已保存: {img_filename}")
             self._clear_draw_failures(event)
+            # 工具已经出过图，抑制同一轮回复里 <pic> 标签的二次自动绘图
+            event._comfy_auto_painted = True
+            event.set_extra("comfy_tool_generated", True)
 
             # 发送结果
             if direct_send:

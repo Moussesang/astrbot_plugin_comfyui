@@ -129,6 +129,10 @@ class ComfyUI:
         self.neg_node_id = str(wf_conf.get("neg_node_id", ""))
         self.output_id = str(wf_conf.get("output_node_id", "9"))
         self.seed_id = None
+        try:
+            self.gen_timeout = max(30, int(wf_conf.get("timeout_seconds", 1800) or 1800))
+        except (TypeError, ValueError):
+            self.gen_timeout = 1800
 
         llm_conf = config.get("llm_settings", {}) or {}
         lora_conf = llm_conf.get("lora_control", {}) or {}
@@ -1068,12 +1072,89 @@ class ComfyUI:
         with open(self.workflow_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
+    @staticmethod
+    def _ref_node_id(value):
+        if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str):
+            return value[0]
+        return None
+
+    def _detect_node_ids(self, workflow):
+        """Pick prompt/negative/output nodes from the graph when configured ids are stale."""
+        found = {}
+        for nid, node in workflow.items():
+            if not isinstance(node, dict) or "KSampler" not in str(node.get("class_type", "")):
+                continue
+            inputs = node.get("inputs", {}) if isinstance(node.get("inputs"), dict) else {}
+            pos = self._ref_node_id(inputs.get("positive"))
+            neg = self._ref_node_id(inputs.get("negative"))
+            if pos and self._has_text_input(workflow, pos) and "input" not in found:
+                found["input"] = pos
+            if neg and self._has_text_input(workflow, neg) and "neg" not in found:
+                found["neg"] = neg
+            if "input" in found and "neg" in found:
+                break
+        if "input" not in found:
+            for nid, node in workflow.items():
+                if isinstance(node, dict) and self._has_text_input(workflow, nid):
+                    found["input"] = str(nid)
+                    break
+        if "neg" not in found:
+            for nid, node in workflow.items():
+                if str(nid) != found.get("input") and self._has_text_input(workflow, nid):
+                    found["neg"] = str(nid)
+                    break
+        for nid, node in workflow.items():
+            if isinstance(node, dict) and node.get("class_type") in ("SaveImage", "PreviewImage"):
+                found["output"] = str(nid)
+                break
+        return found
+
+    @staticmethod
+    def _has_text_input(workflow, node_id):
+        node = workflow.get(str(node_id)) if node_id else None
+        if not isinstance(node, dict):
+            return False
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            return False
+        return "TextEncode" in str(node.get("class_type", "")) and "clip" in inputs
+
+    @staticmethod
+    def _is_output_node(workflow, node_id):
+        node = workflow.get(str(node_id)) if node_id else None
+        return isinstance(node, dict) and node.get("class_type") in ("SaveImage", "PreviewImage")
+
+    def _ensure_node_ids(self, workflow):
+        """Fall back to graph auto-detection when the configured ids are missing or the wrong kind of node."""
+        detected = self._detect_node_ids(workflow)
+        changes = []
+        if not self._has_text_input(workflow, self.input_id) and self._has_text_input(workflow, detected.get("input")):
+            self.input_id = detected["input"]
+            changes.append(f"input={self.input_id}")
+        if self.neg_node_id and not self._has_text_input(workflow, self.neg_node_id) and self._has_text_input(workflow, detected.get("neg")):
+            self.neg_node_id = detected["neg"]
+            changes.append(f"neg={self.neg_node_id}")
+        if not self._is_output_node(workflow, self.output_id) and self._is_output_node(workflow, detected.get("output")):
+            self.output_id = detected["output"]
+            changes.append(f"output={self.output_id}")
+        if changes:
+            logger.warning(
+                f"[ComfyUI] 配置的节点 ID 不适用于工作流 {self.wf_filename}，已自动识别: "
+                + ", ".join(changes)
+            )
+        return bool(changes)
+
     def _inject_params(self, workflow, prompt, lora_selections=None):
         """Inject prompt, optional LoRA selections, steps overrides, and seeds into workflow."""
+        self._ensure_node_ids(workflow)
         node = workflow.get(self.input_id)
         if not node:
-            logger.error(f"critical: input node id {self.input_id} not found in workflow")
-            return
+            message = (
+                f"工作流 {self.wf_filename} 中没有输入节点 {self.input_id}；"
+                "请检查插件配置里的 input_node_id（正向提示词节点），或把工作流改成 API 格式"
+            )
+            logger.error(f"critical: {message}")
+            raise ValueError(message)
 
         inputs = node.get("inputs", {})
         target_keys = [
@@ -1250,7 +1331,10 @@ class ComfyUI:
         if injected_hints:
             logger.info(f"[ComfyUI] injected LoRA prompt hints: {', '.join(injected_hints)}")
 
-        self._inject_params(workflow, prompt, resolved_loras)
+        try:
+            self._inject_params(workflow, prompt, resolved_loras)
+        except ValueError as exc:
+            return None, str(exc)
 
         async with aiohttp.ClientSession() as session:
             payload = {"prompt": workflow, "client_id": client_id}
@@ -1263,7 +1347,8 @@ class ComfyUI:
             except Exception as e:
                 return None, f"请求报错: {str(e)}"
 
-            for _ in range(300):
+            deadline = time.monotonic() + self.gen_timeout
+            while time.monotonic() < deadline:
                 await asyncio.sleep(1)
                 try:
                     async with session.get(f"{self.url}/history/{prompt_id}") as h_resp:
@@ -1274,7 +1359,11 @@ class ComfyUI:
                     continue
 
                 if prompt_id in history:
-                    outputs = history[prompt_id].get("outputs", {})
+                    entry = history[prompt_id] or {}
+                    status = entry.get("status") or {}
+                    if status.get("status_str") == "error":
+                        return None, f"工作流执行失败: {status.get('messages') or '未知错误'}"
+                    outputs = entry.get("outputs", {})
                     img_info = None
 
                     if self.output_id and self.output_id in outputs:
@@ -1301,4 +1390,4 @@ class ComfyUI:
 
                     return None, "工作流执行完成，但未找到输出图片"
 
-            return None, "生成超时"
+            return None, f"生成超时（已等待 {self.gen_timeout} 秒仍未完成，可在插件配置 workflow_settings.timeout_seconds 调大）"

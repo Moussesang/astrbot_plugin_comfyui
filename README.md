@@ -275,6 +275,22 @@ data\plugin_data\astrbot_plugin_comfyui_pro
 
 ---
 
+## Changelog
+
+### v2.5
+
+- **修复慢速工作流被误判为“生成超时”**：等待出图的轮询上限原本硬编码为 300 秒，高步数 / 高分辨率工作流（实测单张 1100-1200 秒）必然超时失败。现在改为可配置项 **`工作流设置 → 生成超时时间（秒）`**（`workflow_settings.timeout_seconds`，默认 `1800`），配合 AstrBot 的 `工具调用超时时间` 一起调大即可。
+- **超时提示更明确**：超时文案会带上实际等待秒数并提示去哪个配置项调大；工作流内部报错时直接返回 `工作流执行失败: ...` 而不是等到超时。
+- **自动识别节点 ID**：当配置的 `input_node_id` / `neg_node_id` / `output_node_id` 与当前工作流的节点不匹配时，会自动从图中推断正确的节点并打印 `[ComfyUI] 配置的节点 ID 不适用于工作流 ...，已自动识别: ...`，换工作流后不必手动改 ID。
+- **输入节点缺失时报错更可读**：由原本的静默失败改为明确提示“请检查插件配置里的 input_node_id，或把工作流改成 API 格式”。
+- **标签泄漏修复**：模型偶尔会输出 `<render>`、`</think>`、`</final>`、`<system_reminder>` 等没有渲染器的包裹标签，配合分段发送会原样漏到聊天里。现在统一剥离，并在系统提示词中禁止输出包裹标签。
+- **中文引号兼容**：模型写 `<pic prompt=“...”>`（中文弯引号）时不再匹配失败，`prompt` 里的中文/全角引号会先归一化。
+- **中文提示词自动转英文 tags**：提示词里含中文时先调用当前会话模型翻译成 Danbooru 风格 tags，失败则回退原文。
+- **正向提示词清理**：自动剔除被误写进正向提示词里的 `low quality` / `watermark` / `bad anatomy` 等负面词。
+- **避免重复绘图**：工具已经出过图时抑制同一轮回复里 `<pic>` 标签的二次自动绘图。
+
+---
+
 ## Hardening Notes
 
 This plugin now applies a few compatibility-preserving safety defaults:
