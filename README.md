@@ -1,315 +1,424 @@
-# 🎨 AstrBot Plugin ComfyUI Pro
+<div align="center">
 
-## 需要特别提到的事：
-本插件并没有提供ui来直接配置工作流的图片尺寸，步数，lora等的选项，这并不是为了增加上手难度，相反，这是为了提供最大的灵活性和兼容性。这个调整可以让插件适配所有（大概）工作流，只要你有，经过简单的几个步骤，你就可以通过本插件调用。
-同时，为了提高对不同来源 AI 的兼容，我使用了正则来提取 LLM 回复中的绘图标签，而不是依靠 AI 本身的函数调用功能。因此如果出现问题，可以尝试关闭 AI 函数调用权限，并检查回复中是否正确包含 `<pic prompt="...">`。
+# 🎨 AstrBot Plugin · ComfyUI Pro
 
-## 介绍
-一个功能强大的 AstrBot 插件，旨在将你本地的 **ComfyUI** 无缝集成到聊天机器人中。
+**把本地 ComfyUI 接进 AstrBot：自然语言出图 · 多工作流热切换 · 让 LLM 当你的分镜导演**
 
-它不仅支持基础的文生图，更创新的引入了 LLM（大语言模型）作为“提示词工程师”，能够将用户的日常对话自动转化为 ComfyUI 可识别的高质量英文 Prompt。同时，它对 ComfyUI 用户极其友好，支持便捷地导入和切换你自己的工作流，并提供了完善的权限控制和敏感词过滤系统。
+`v2.6` · 需要 AstrBot `>= 4.11` · 只认 ComfyUI **API 格式**工作流
 
-导入工作流请务必参考教程。
-
-## 🚀 核心优势：轻松使用你自己的工作流
-
-本插件最大的特点就是让你几乎无缝地使用你在 ComfyUI 中已经搭建好的工作流。只需简单几步，就能将你的创意带入 AstrBot。
-
-### 一、导出你的工作流
- 在你的工作流界面，点击菜单的 **`Save (API Format)`** 按钮，将工作流导出为 `.json` 文件。
-
-### 二、找到关键节点 ID
-记下你的工作流中 **输入** 和 **输出** 节点的 ID。开启开发者模式后，ID 会显示在每个节点的标题上方。
-*   **输入节点 (Input ID)**: 通常是接收提示词的 `CLIP Text Encode` 节点。**（必需）**
-*   **输出节点 (Output ID)**: 最终生成图像的 `Save Image` 或 `Preview Image` 节点。**（必选）**
-
-### 三、放置并配置
-1.  将导出的 `.json` 文件放入插件的 `workflow` 目录中。
-    *   路径为: `data/plugins/astrbot_plugin_comfyui_pro/workflow/`
-2.  **重载插件**，然后刷新网页，再次**重载插件**，这样才可以看到你刚才放进的workflow。
-3.  进入插件设置，在“工作流设置”中：
-    *   选择你刚刚放入的 `.json` 文件。
-    *   填入你记下的 **节点ID**。
-4.  **完成！** 现在你的机器人就可以使用这个专属工作流进行绘画了。
+</div>
 
 ---
 
-## ✨ 主要功能
+## 目录
 
-### 🔌 ComfyUI 深度集成
-*   **便捷工作流导入**: 完美支持 ComfyUI 的 API 格式工作流，让你专注于创意。
-*   **多工作流热切换**: 在 AstrBot 后台或通过管理员指令，随时切换不同的模型和风格（如 SDXL、二次元、写实、特定 LoRA 流等）。
-*   **智能参数注入**: 自动将提示词注入到你指定的输入节点，并智能寻找种子节点以实现随机化，避免生成重复图片。
-
-### 🤖 智能 LLM 绘图
-*   **自然语言生图**: 用户只需说“帮我画一个...”，LLM 即自动分析、优化并生成高质量英文提示词，触发绘图，真正实现“开箱即用”。
-*   **指令生图**: 为高级用户保留了传统的 `/画图` 指令，可直接输入英文 Tag 进行精准控制。
-*   **高度可定制**: 你可以随时在后台修改 System Prompt，定制你的“AI 绘画助手”人设和回复风格。
-*   **当前触发格式**: 插件会从 LLM 回复中提取 `<pic prompt="...">` 标签作为绘图提示词，并会自动忽略 `<think> ... </think>` 内容。
-*   **注意事项**：如果你自定义了 System Prompt，请确保需要出图时最终回复里包含合法的 `<pic prompt="英文 tags">`；如果没有这个标签，插件就不会触发绘图。
-  
-### 🛡️ 完善的风控与权限
-*   **分级违禁词过滤**: 内置 `Lite` 和 `Full` 两级敏感词库，支持中英文过滤，可为不同群组设置不同策略。
-*   **白名单与全局锁定**: 可设置仅在白名单群组生效，或一键开启“全局锁定”，仅允许管理员使用。
-*   **锁定命令开关**: 支持 `/comfy_lock on|off|status` 动态切换全局锁定，也可以在配置里关闭这个命令入口。
-*   **管理员特权**: 管理员可配置“无视冷却”、“无视白名单”、“无视敏感词”等超级权限。
+- [一、设计取舍](#一设计取舍)
+- [二、功能一览](#二功能一览)
+- [三、快速开始](#三快速开始)
+- [四、接入你自己的工作流](#四接入你自己的工作流)
+- [五、使用方式](#五使用方式)
+- [六、指令速查](#六指令速查)
+- [七、配置参考](#七配置参考)
+- [八、常见问题](#八常见问题)
+- [九、数据目录与升级](#九数据目录与升级)
+- [十、更新日志](#十更新日志)
 
 ---
 
-## ⚙️ 详细配置说明
+## 一、设计取舍
 
-在 AstrBot 仪表盘 -> 插件 -> `astrbot_plugin_comfyui_pro` 中点击设置：
+**插件不提供“图片尺寸 / 步数 / LoRA”这类前端参数面板，这不是偷懒。**
 
-### 1. ComfyUI 连接
-*   `Server Address`: 你的 ComfyUI 运行地址，默认为 `127.0.0.1:8188`。
+ComfyUI 的工作流是图灵完备的，任何试图把参数抽象成开关的做法，最终都会在某个用户的自定义节点前失效——一个 `PrimitiveNode` 链就能绕开所有假设。所以本插件的立场是：**参数留给你在工作流里调，插件只负责把“提示词”和“种子”注入进去。**
 
-### 2. 工作流设置 (Workflow Settings)
-*   `JSON File`: **(核心)** 选择一个你已放入 `workflow` 文件夹的工作流文件。
-*   `Input Node ID`: **(核心)** 你的工作流中，接收正向提示词的节点 ID。
-*   `Output Node ID`: **(核心)** 输出图片的节点 ID 。
+同样的取舍也体现在提示词提取上：插件用**正则**从 LLM 回复里抓 `<pic prompt="...">`，而不是依赖模型的函数调用能力。这样任何模型、任何兼容层都能用，代价是你改了 System Prompt 之后必须保证这个标签还存在。
 
-### 3. LLM 设置 (LLM Settings)
-*   `System Prompt`: 在这里编辑给 LLM 的系统提示词，定义它如何响应用户的画图请求。
-    > ⚠️ **CRITICAL**: 插件当前通过正则表达式 `<pic\s+prompt="(.*?)">` 提取绘图提示词。无论你如何修改 System Prompt，**必须**确保最终 LLM 的回复在需要出图时包含合法的 `<pic prompt="...">` 标签，否则插件将无法触发绘图。
-    >
-    > 推荐同时保留 `<think> ... </think>` + `<pic prompt="...">` 的输出顺序，这与插件默认配置和多图分段逻辑保持一致。
-
-### 4. 访问控制 (Control)
-*   **管理员与白名单**: 设置管理员 QQ 号和允许使用插件的群号。
-*   **冷却时间**: 防止用户刷屏。
-*   **全局锁定**: `lockdown` 为静态总开关，开启后仅管理员可用。
-*   **锁定命令开关**: `lockdown_command_enabled` 控制是否允许管理员使用 `/comfy_lock on|off|status` 动态切换锁定状态。
-*   **违禁词策略**: 为私聊和群聊设置默认的敏感词拦截等级 (none/lite/full)。
+> 如果你更希望走原生函数调用，可以关闭模型的工具调用权限并在提示词里保留 `<pic>` 标签——两条路都通。
 
 ---
 
-## 📖 指令与用法
+## 二、功能一览
 
-### 方式一：自然语言对话 (推荐)
-直接与机器人对话，让它帮你画。
-*   **你**: “帮我画一只猫，赛博朋克风格，在下雨的东京街头”
-*   **机器人**: (分析需求 -> 生成 Prompt -> 调用 ComfyUI -> 发送图片)
+| 能力 | 说明 |
+| :--- | :--- |
+| **工作流热切换** | 后台下拉框、`/comfy_use` 指令都能切，**不需要重载插件** |
+| **节点 ID 自动识别** | 换工作流后忘记改 ID 也不会画错——正向节点只认采样器的 positive 连线，且绝不写入负面节点 |
+| **超时可配置** | 高步数工作流单张跑 20 分钟很常见，超时上限默认 1800 秒且可在后台改 |
+| **LLM 智能绘图** | 自然语言 → 英文 Danbooru tags → 出图，全自动，无需用户写 tag |
+| **多图分段** | 一次回复里可以有多张图，文字与图片交替发送 |
+| **LoRA 堆控制** | 可选：把工作流里的 LoRA 清单注入提示词，让 LLM 自己挑 LoRA（含触发词） |
+| **分级敏感词** | `none / lite / full` 三档，群聊与私聊可分别设置，白名单群可逐群覆盖 |
+| **访问控制** | 群白名单、全局锁定、冷却时间、管理员特权（无视冷却/白名单/敏感词） |
+| **标签自净** | `<pic>` `<think>` `<render>` `<final>` `<system_reminder>` 等包裹标签一律剥离，不会漏到聊天里 |
 
-![llm演示](https://raw.githubusercontent.com/lumingya/astrbot_plugin_comfyui_pro/main/assets/llm.png)
+---
 
-### 方式二：直接指令
-*   `/画图 <提示词>`: 以合并转发的方式发送图片。
-*   
+## 三、快速开始
+
+### 1. 安装
+
+把插件放到 AstrBot 的插件目录：
+
+```
+data/plugins/astrbot_plugin_comfyui_pro/
+```
+
+然后在 **仪表盘 → 插件** 里重载一次。首次启动会自动创建数据目录，并把默认模板 `workflow_api.json` 复制进去。
+
+### 2. 连上 ComfyUI
+
+先确认 ComfyUI 已经启动，浏览器打开 `http://127.0.0.1:8188` 能看到界面。
+
+然后在 **插件设置 → ComfyUI 服务端 IP、端口** 填：
+
+```
+127.0.0.1:8188
+```
+
+> 不用写 `http://`，插件会自动补；结尾的 `/` 也会被自动去掉。
+
+### 3. 三分钟跑通
+
+1. 把一个工作流 `.json` 丢进 `data/plugin_data/astrbot_plugin_comfyui_pro/workflow/`
+2. 重载插件两次（详见 [4.4](#44-让新工作流出现在下拉框)），在下拉框里选中它
+3. 在聊天里发一句 **“帮我画一只在雨夜街头的白猫，赛博朋克风”**
+
+出图了就算跑通。想看节点配置对不对，发 `/当前工作流`。
+
+---
+
+## 四、接入你自己的工作流
+
+### 4.1 导出 API 格式
+
+在 ComfyUI 里打开你的工作流，点菜单 **`Save (API Format)`**，得到一个 `.json`。
+
+> ⚠️ **必须是 API 格式。** 普通 `Save` 导出的那份是给前端用的，节点结构完全不同，插件会读不出来。
+
+### 4.2 节点 ID：填对更快，留空也能跑
+
+打开 ComfyUI 设置里的「开发者模式」，节点标题上方会显示 ID。
+
+| 配置项 | 是否必需 | 找不到时 |
+| :--- | :--- | :--- |
+| **正向节点** `input_node_id` | 建议填 | 自动从采样器的 `positive` 连线推断 |
+| **负面节点** `neg_node_id` | **可以不填** | 留空则自动识别；**一旦填了，插件永远不会改它** |
+| **输出节点** `output_node_id` | 可以不填 | 自动找 `SaveImage` / `PreviewImage` |
+
+自动识别的规则比较严格，这也是 v2.6 的重点修复：
+
+- **正向节点必须是文本节点**，并且**没有被任何采样器当作 negative 使用**；
+- 采样器有 positive 连线时，该节点还必须真的出现在 positive 目标里。
+
+所以哪怕你把正向 ID 误填成了负面提示词节点，插件也会自己纠正回来并打一条警告，而不是把你的画面描述写进负面条件里。
+
+**负面节点是完全尊重你配置的**：只要你在配置里写了 ID，插件就照着写，不会因为“工作流里找不到这个 ID”而偷偷换成它猜的那个。这适合“负面提示词我早就写死了”的用法。
+
+### 4.3 放到数据目录
+
+```
+data/plugin_data/astrbot_plugin_comfyui_pro/workflow/
+```
+
+注意是 `plugin_data` 下面，不是插件目录下的 `workflow/`——后者只存默认模板，升级会被覆盖。
+
+### 4.4 让新工作流出现在下拉框
+
+AstrBot 的配置项有缓存，新文件不会立刻出现在下拉框里。按这个顺序操作：
+
+1. **重载插件**
+2. **刷新浏览器（F5）**
+3. **再重载一次插件**
+
+下拉框里就会出现新文件。这一步是框架行为，不是插件的问题。
+
+### 4.5 运行时切换
+
+不想重载也行，管理员直接在群里切：
+
+```
+/comfy_ls              # 看序号
+/comfy_use 2           # 切到第 2 个
+/comfy_use 2 6 7 9     # 顺便指定 正向/负面/输出 节点
+```
+
+> **序号只统计你自己放进 `workflow` 目录的工作流。** 插件自带的模板 `workflow_api.json` 会保留在目录里，但不参与编号，避免 `/comfy_use 4` 之类误切到模板。
+
+切换只改内存，**不写回配置文件**——重启或重载插件后会回到后台配置里选的那个工作流。
+
+---
+
+## 五、使用方式
+
+### 5.1 自然语言（推荐）
+
+```
+你：帮我画一只猫，赛博朋克风格，在下雨的东京街头
+机器人：(分析需求 → 生成英文 tags → 调用 ComfyUI → 发图)
+```
+
+![LLM 绘图演示](https://raw.githubusercontent.com/lumingya/astrbot_plugin_comfyui_pro/main/assets/llm.png)
+
+### 5.2 指令出图
+
+```
+/画图 1girl, white hair, raining street, cinematic lighting
+```
+
+以**合并转发**方式发送图片。
+
 ![指令演示](https://raw.githubusercontent.com/lumingya/astrbot_plugin_comfyui_pro/main/assets/draw.png)
 
-*   `/画图no <提示词>`: 直接发送图片，更简洁。
+```
+/画图no 1girl, white hair, raining street, cinematic lighting
+```
 
-![指令演示](https://raw.githubusercontent.com/lumingya/astrbot_plugin_comfyui_pro/main/assets/drawno.png)
+**直接发送**，不打包转发，看起来更干净。
 
-### 方式三：管理指令 (仅管理员)
-*   `/comfy_ls`: 列出所有可用的工作流，并显示序号。
-*   `/comfy_use <序号> [input_id] [output_id]`: 通过序号快速切换工作流，该方法不需要重载插件。
-*   `/comfy_lock on|off|status`: 动态查看或切换全局锁定状态。
-*   `/违禁级别 <none/lite/full>`: 调整当前群的敏感词拦截等级。
-*   `/comfy帮助`: 查看所有可用指令。
+![直发演示](https://raw.githubusercontent.com/lumingya/astrbot_plugin_comfyui_pro/main/assets/drawno.png)
 
-> 序号只统计你自己放入 `workflow` 目录的工作流。插件自带的模板 `workflow_api.json` 会保留在目录中，但默认不参与编号，避免 `/comfy_use 4` 这类操作误切到模板。
+### 5.3 出图是怎么被触发的
+
+插件从 LLM 回复里提取这个标签：
+
+```html
+<pic prompt="1girl, solo, white hair, raining street, cinematic lighting">
+```
+
+配套规则：
+
+- `<think> ... </think>` 里的内容会被丢弃，不进入聊天；
+- 允许**中文弯引号**：`<pic prompt=“...”>` 也能识别（v2.5 起）；
+- 提示词里含中文时，会先调用当前会话模型翻译成英文 tags，失败则回退原文；
+- 被误写进正向提示词的 `low quality` / `watermark` / `bad anatomy` 之类负面词会被自动剔除；
+- 同一条回复里如果工具已经出过图，`<pic>` 不会二次触发；
+- 模型把思考过程写进正文（“我需要先给出 pic prompt…”）时，这些**导演笔记**会被兜底剥离。
 
 ---
 
-## ❓ 常见问题 (FAQ)
+## 六、指令速查
 
-**Q: 为什么 LLM 回复了 `<pic prompt="...">`，但没有出图？**
-A: 99% 的可能是配置问题。请检查：
-    1.  你的 ComfyUI 服务是否已在本地成功启动？
-    2.  插件设置中的 `Input Node ID` 是否填写正确？这是最常见的错误。
-    3.  `system_prompt` 是否仍然要求在需要出图时输出合法的 `<pic prompt="英文 tags">` 标签？
-    4.  后台日志中是否有报错信息？
+| 指令 | 权限 | 说明 |
+| :--- | :--- | :--- |
+| `/画图 <提示词>` <br> 别名 `/绘画` | 所有用户 | 生成图片，合并转发发送 |
+| `/画图no <提示词>` | 所有用户 | 生成图片，直接发送 |
+| `/重绘 <提示词>` <br> 别名 `/重抽` `/reroll` | 所有用户 | 直接发送，用于同一提示词重抽 |
+| `/当前工作流` <br> 别名 `/comfy_current` `/当前wf` | 所有用户 | 查看当前工作流、三个节点、以及正向节点当前文本 |
+| `/comfy帮助` | 所有用户 | 帮助 + 当前位置 / 违禁级别 / 冷却 / 锁定状态 |
+| `/测试lora [关键词]` | 所有用户 | 列出当前工作流可用的 LoRA 及其触发词 |
+| `/comfy_ls` | 管理员 | 列出可编号的工作流，标出当前项与步数覆盖数量 |
+| `/comfy_use <序号> [正向ID] [负面ID] [输出ID]` | 管理员 | 热切换工作流，无需重载 |
+| `/comfy_save <文件名> <JSON>` | 管理员 | 直接粘贴 JSON 内容导入工作流 |
+| `/comfy_add <节点ID> <步数>` | 管理员 | 按节点 ID 覆盖步数，见 [7.3](#73-步数覆盖) |
+| `/comfy_lock on\|off\|status` | 管理员 | 动态开关全局锁定 |
+| `/违禁级别 <none\|lite\|full>` | 管理员 | 设置当前群的敏感词等级 |
 
-**Q: 我新添加的 `.json` 文件在插件设置的下拉菜单里看不到？**
-A: 这是 AstrBot 的缓存机制导致。请在后台 **“重载插件”**，然后 **“刷新你的浏览器网页 (F5)”**，然后再次**“重载插件”**，新的选项就会出现。
-
-**Q: 生成的图片总是一样的？**
-A: 插件会自动寻找并修改名为 `seed` 或 `noise_seed` 的参数。如果你的工作流使用了非常规的自定义种子节点，插件可能无法识别。请尝试在设置中手动指定 `Seed Node ID`。
-
-# 📋 Version 2.0.0 更新日志
-✨ 新增：步数覆盖功能（按节点ID精确控制）
-针对复杂工作流（如包含多个 ParameterControlPanel 的场景），现在可以按节点ID单独设置步数，彻底解决了"ComfyUI 前端修改参数会影响插件生成"的问题。
-
-
-新增指令：/comfy_add（该指令正常无需使用，目前仅针对 ParameterControl节点）
-
-text
-
-/comfy_add <节点ID> <步数>           单个设置
-/comfy_add <ID1> <步数1> <ID2> <步数2>   批量设置
-/comfy_add <节点ID> off              取消单个覆盖
-/comfy_add list                      查看当前工作流的覆盖配置
-/comfy_add clear                     清空当前工作流的所有覆盖
-使用示例：
-
-text
-
-/comfy_add 3839 20              # 底图部分设为20步
-/comfy_add 3839 20 4521 50      # 同时设置底图20步、放大50步
-/comfy_add list                 # 查看当前配置
-特性：
-
-覆盖配置按工作流文件独立存储（工作流名.steps.json）
-支持一个工作流配置多个不同节点的步数
-切换工作流时自动加载对应的覆盖配置
-完全脱离 ComfyUI 前端状态，插件生成参数独立可控
-🔧 优化
-📂 工作流管理优化
-/comfy_ls 现在会显示每个工作流的覆盖配置数量
-/comfy_use 切换工作流时自动排除配置文件（.steps.json）
-工作流列表更新时自动过滤配置文件
-🛡️ 稳定性提升
-优化 ParameterBreak 节点检测逻辑，自动识别无需硬编码节点ID
-增加覆盖生效日志，方便调试确认
-
-从 v2.0 开始，插件采用 AstrBot 规范的数据持久化方案。你的工作流、生成的图片、自定义敏感词等数据将存储在独立的数据目录中，**更新插件不会覆盖这些文件**。
-
-### 📂 新的目录结构
+`/当前工作流` 的输出长这样：
 
 ```
-data/plugin_data/astrbot_plugin_comfyui_pro/   # ✅ 持久化目录（更新不丢失）
-├── workflow/                                   # 你的工作流文件
-│   ├── workflow_api.json                       # 首次安装时自动复制
-│   └── my_custom_workflow.json                 # 你自己添加的
-├── output/                                     # 生成的图片历史
-│   └── *.png
-└── sensitive_words.json                        # 敏感词配置（可自定义）
+🧠 当前 ComfyUI 工作流
+- 文件: MiaoMiao Harem _Anima_1.6_api.json
+- 正向节点: 6
+- 负面节点: 26
+- 输出节点: 20
+- 该节点当前文本: (由上游节点提供，插件不写入)
+```
 
-plugins/astrbot_plugin_comfyui_pro/            # ⚠️ 插件目录（更新会覆盖）
+如果正向节点配错了，会直接标出来：`正向节点: 5（⚠️ 该节点不是采样器的正向文本节点，出图时会自动纠正）`。
+
+---
+
+## 七、配置参考
+
+### 7.1 ComfyUI 连接
+
+| 配置项 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `server_address` | `127.0.0.1:8188` | ComfyUI 服务地址。自动补 `http://`、去尾部 `/`、去首尾空格 |
+
+### 7.2 工作流设置 `workflow_settings`
+
+| 配置项 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `json_file` | `workflow.json` | 使用哪个工作流文件（下拉框自动扫描 `workflow` 目录） |
+| `input_node_id` | `6` | 正向提示词节点。填错/留空会按采样器连线自动纠正 |
+| `neg_node_id` | `7` | 负面提示词节点。**留空则自动识别；填了就不会被改写** |
+| `output_node_id` | 空 | 输出节点。留空自动找 `SaveImage` / `PreviewImage` |
+| `timeout_seconds` | `1800` | 等待出图的最长秒数。最小 30 秒，见下方说明 |
+
+**关于超时**：ComfyUI 的耗时完全取决于你的显卡与工作流。50 步 1.5MP 的 Flux 工作流实测单张要 **1100–1200 秒**，旧版本硬编码 300 秒，所以必然误报“生成超时”。现在默认 1800 秒，不够就继续调大。
+
+如果模型走的是**工具调用**路径出图，还要同步调大 AstrBot 的 `工具调用超时时间`（`agent_runner.config.misc.tool_call_timeout`，默认 120 秒），否则框架会在插件之前就把这次调用掐断。
+
+### 7.3 步数覆盖
+
+复杂工作流里常有多个采样器（底图 + 高清修复）。`/comfy_add` 可以按节点 ID 单独钉死步数，让插件生成不受 ComfyUI 前端改动影响：
+
+```
+/comfy_add 3839 20                 # 把节点 3839 设成 20 步
+/comfy_add 3839 20 4521 50         # 同时设置多个节点
+/comfy_add list                    # 查看当前工作流的覆盖配置
+/comfy_add 3839 off                # 取消单个覆盖
+/comfy_add clear                   # 清空当前工作流的所有覆盖
+```
+
+覆盖配置按工作流独立存成 `<工作流名>.steps.json`，切换工作流时自动加载。
+
+### 7.4 大语言模型设置 `llm_settings`
+
+| 配置项 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `system_prompt` | 内置分镜导演提示词 | 定义 AI 如何把剧情转成绘图 tags。**必须保留 `<pic prompt="...">` 格式说明** |
+| `multi_image_mode` | `false` | 开启后支持一次回复多张图，文字与图片交替分段发送 |
+| `discard_prompt_from_history` | `false` | 开启后 `<pic>` 标签不留在对话历史里，减少上下文占用 |
+| `force_draw_when_no_prompt` | `false` | 开启后，当 AI 产出的图片数不足时自动二次请求补图 |
+| `target_image_count` | `1` | 期望的最少图片数，配合上一项使用 |
+| `lora_control` | 关闭 | LoRA 堆控制，见下表 |
+
+`lora_control` 子项：
+
+| 子项 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `enabled` | `false` | 启用 LLM 控制 LoRA 堆 |
+| `scan_directories` | 空 | ComfyUI 端的 `models/loras` 根目录，一行一个，会递归扫描 |
+| `inject_catalog_into_system_prompt` | `true` | 把可用 LoRA 清单注入系统提示词 |
+| `inject_selected_prompt_hints` | `true` | 选中 LoRA 时，把它的触发词自动加进正向提示词 |
+| `keep_workflow_defaults_when_selected` | `true` | 保留工作流里原本已启用的 LoRA |
+| `max_lora_count` | `4` | 一次最多选几个 |
+| `max_trigger_options_per_lora` | `3` | 每个 LoRA 最多展示几个触发词候选 |
+| `trigger_option_preview_length` | `80` | 触发词在提示词里的最大预览长度 |
+
+### 7.5 访问控制 `control`
+
+| 配置项 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `admin_ids` | 空 | 管理员 QQ 号列表 |
+| `whitelist_group_ids` | 空 | 允许使用的群号列表。**留空 = 所有群都不允许**（私聊不受此限制） |
+| `cooldown_seconds` | `35` | 每个用户的冷却时间 |
+| `default_group_policy` | `lite` | 白名单群的默认敏感词等级 |
+| `default_private_policy` | `lite` | 私聊的默认敏感词等级 |
+| `lockdown` | `false` | 全局锁定：开启后仅管理员可用 |
+| `lockdown_command_enabled` | `true` | 是否允许用 `/comfy_lock` 动态切换锁定 |
+
+`admin_bypass` 子项（管理员特权，默认全开）：
+
+| 子项 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `whitelist` | `true` | 管理员无视群白名单 |
+| `cooldown` | `true` | 管理员无视冷却 |
+| `sensitive_words` | `true` | 管理员无视敏感词 |
+
+---
+
+## 八、常见问题
+
+**Q：LLM 明明输出了 `<pic prompt="...">`，却没出图？**
+
+按顺序排查：
+
+1. ComfyUI 是否真的在运行？（浏览器能打开 `http://127.0.0.1:8188`）
+2. 后台选的 `json_file` 在 `plugin_data/.../workflow/` 里**还存在吗**？换过工作流目录的话这里经常指向一个已删除的文件。
+3. 日志里有没有 `工作流文件不存在` / `工作流执行失败` / `生成超时`？
+4. 你自定义过 `system_prompt` 吗？里面必须还有 `<pic prompt="...">` 的格式说明。
+
+**Q：新加的 `.json` 在下拉框里看不到？**
+
+重载插件 → 刷新浏览器（F5）→ 再重载插件。见 [4.4](#44-让新工作流出现在下拉框)。
+
+**Q：报「生成超时」，但 ComfyUI 里图其实生成出来了？**
+
+这是 v2.5 之前的经典问题：旧版本把等待上限写死 300 秒。现在去 **工作流设置 → 生成超时时间（秒）** 调到 `1800` 或更大。如果日志里是 `tool ... execution timeout`，那是 AstrBot 侧的工具超时，需要调 `工具调用超时时间`。
+
+**Q：每次出的图都一模一样？**
+
+插件会自动改写名为 `seed` 或 `noise_seed` 的输入。如果你的工作流用自定义节点管种子，插件可能认不出来——把该节点改成标准 `KSampler`，或在 `seed` 命名上对齐。
+
+**Q：换工作流之后提示词画错地方了 / 画到了负面词里？**
+
+v2.6 已修：正向节点必须同时满足“是文本节点”且“不被任何采样器当作 negative”。如果你手动指定了错误的 ID，插件会纠正并在日志里警告。发 `/当前工作流` 可以看到实际生效的节点。
+
+**Q：群里不回复 / 只有 @ 才回复？**
+
+这和本插件无关，是 AstrBot 的唤醒策略（`wake_prefix`、`empty_mention_waiting`）或群聊增强插件的概率策略决定的。
+
+**Q：`/comfy_use` 切换后重启又变回去了？**
+
+符合预期。切换只改内存，不写配置文件。想固定就用后台下拉框选。
+
+**Q：能画 R18 吗？**
+
+插件本身不做内容审查之外的额外限制，但内置敏感词库（`lite` / `full`）会拦截。查 `sensitive_words.json`，可以自行增删。
+
+---
+
+## 九、数据目录与升级
+
+从 v2.0 起，所有用户数据都在 `plugin_data` 下，**升级插件不会覆盖**：
+
+```
+data/plugin_data/astrbot_plugin_comfyui_pro/
+├── workflow/                     # 你的工作流（放这里）
+│   ├── workflow_api.json         # 插件自带模板，首次安装时复制
+│   ├── my_workflow_api.json      # 你自己导入的
+│   └── my_workflow_api.steps.json# 可选：步数覆盖配置
+├── output/                       # 生成的图片历史
+└── sensitive_words.json          # 敏感词库（可自行修改）
+
+data/plugins/astrbot_plugin_comfyui_pro/   # ⚠️ 插件代码，升级会覆盖
 ├── main.py
 ├── comfyui_api.py
-└── ...
+├── _conf_schema.json
+└── workflow/                     # 仅存放默认模板
 ```
 
-### 🔄 迁移指南（从 v1.x 升级）
+后台填的所有配置（管理员、白名单、节点 ID、超时等）由 AstrBot 框架管理，升级同样不会丢。
 
-如果你之前已经在使用本插件：
-
-1. **备份你的工作流文件**
-   - 复制 `plugins/astrbot_plugin_comfyui_pro/workflow/` 下的所有 `.json` 文件
-
-2. **更新插件**
-
-3. **恢复工作流**
-   - 将备份的文件放入新目录：`data/plugin_data/astrbot_plugin_comfyui_pro/workflow/`
-
-4. **重载插件**（两次重载 + 刷新浏览器，老规矩）
-
-> 💡 **提示**：你在 AstrBot 后台填写的配置（管理员ID、白名单群等）由框架管理，**不会丢失**，无需额外操作。
+**从 v1.x 升级**：把旧插件目录 `workflow/` 里的 `.json` 挪到 `plugin_data/.../workflow/`，重载两次即可。
 
 ---
 
-## ✨ 新增功能
+## 十、更新日志
 
-### 🚀 首次安装自动初始化
-- 首次安装插件时，会自动将插件自带的默认工作流和敏感词文件复制到数据目录
-- 无需手动配置即可开始使用
+### v2.6
 
-### 📝 全新的日志与提示系统
-所有提示信息现在都会告诉你**具体原因**，不再是简单的"禁止输入"：
-
-| 场景 | v1.x | v2.0 |
-|------|------|------|
-| 群不在白名单 | `禁止输入。` | `🚫 本群(123456)不在白名单中` |
-| 全局锁定 | `全局锁定。` | `🔒 全局锁定中，仅管理员可用` |
-| 冷却中 | `请求太频繁...` | `⏱️ 冷却中，请在 30 秒后重试` |
-| 权限不足 | `权限不足。` | `🚫 权限不足，仅管理员可查看工作流列表` |
-| 敏感词拦截 | `检测到敏感词：xxx` | `🚫 检测到敏感词：xxx、yyy，无法生成图片` |
-
-### 📊 更清晰的启动日志
-```
-[ComfyUI] 📂 数据目录: .../plugin_data/astrbot_plugin_comfyui_pro
-[ComfyUI] 📋 已复制 6 个默认工作流
-[ComfyUI] 🔄 工作流列表已更新: 13 个可用
-[ComfyUI] 👤 管理员: 2 个 | 🏠 白名单群: 3 个
-[ComfyUI] 🔒 敏感词库已加载: 1234 个词条
-[ComfyUI] ✅ ComfyUI API 初始化成功
-[ComfyUI] 🎨 插件初始化完成，LLM 工具已激活
-```
-
----
-
-## 🔧 优化与修复
-
-### 代码优化
-- 统一使用 `pathlib.Path` 处理路径，提高跨平台兼容性
-- 重构权限检查逻辑，代码更清晰，维护更方便
-- 优化 ComfyUI API 初始化，支持传入数据目录参数
-
-### 帮助命令优化
-- `/comfy帮助` 现在会显示更多状态信息（当前位置、违禁级别、冷却时间）
-- 管理员可以看到数据目录路径，方便管理
-- `/comfy_ls` 现在会高亮显示当前正在使用的工作流
-
-### 其他改进
-- 敏感词提示最多显示 5 个，避免消息过长
-- 生成图片时会记录日志，方便追踪问题
-- 工作流切换时的提示更加详细
-
----
-
-## ⚠️ 注意事项
-
-### 关于工作流存放位置
-**从 v2.0 开始，工作流文件应该放在：**
-```
-data\plugin_data\astrbot_plugin_comfyui_pro\workflow
-```
-而**不是**之前的：
-```
-data\plugins\astrbot_plugin_comfyui_pro/workflow/
-```
-
-插件目录下的 `workflow` 文件夹现在仅用于存放**默认模板**，供首次安装时复制使用。
-
-敏感词配置和图片存储同样在：
-```
-data\plugin_data\astrbot_plugin_comfyui_pro
-```
-### 关于配置保留
-以下配置由 AstrBot 框架管理，**更新插件不会丢失**：
-- ✅ ComfyUI 服务地址
-- ✅ 工作流节点 ID 配置
-- ✅ 管理员 ID 列表
-- ✅ 白名单群列表
-- ✅ 冷却时间、违禁级别等所有设置
-
----
-
-## Changelog
+- **正向节点识别收紧**：只认采样器 `positive` 连线指向的文本节点，并排除所有采样器的 `negative` 目标。此前若把 `input_node_id` 误填成负面提示词节点，插件会认为“它是文本节点，合法”，于是把画面描述写进负面条件。
+- **负面节点不再被自动改写**：`neg_node_id` 非空时永远按你写的来；只有配置为空时才自动补一个参考值。适合“负面提示词写死在工作流里”的用法。
+- **`/当前工作流` 显示运行时真实状态**：改为读运行中的 API 实例，而非配置文件原始值；新增负面节点、输出节点、以及正向节点当前文本（若文本来自上游节点会明确标注“插件不写入”）；节点配错时直接打警告。
+- **正文导演笔记兜底剥离**：模型偶尔不把“我需要给出 pic prompt”、“保持简洁”、“避免重复”写进 `<think>`，而是直接写进正文，这类句子没有标签可剥，会随分段发送漏到聊天里。现在按特征词密度判定并丢弃笔记区。
+- **系统提示词新增第 7 条**：明确禁止把思考、计划、草稿、自我提醒写进正文。
 
 ### v2.5
 
-- **修复慢速工作流被误判为“生成超时”**：等待出图的轮询上限原本硬编码为 300 秒，高步数 / 高分辨率工作流（实测单张 1100-1200 秒）必然超时失败。现在改为可配置项 **`工作流设置 → 生成超时时间（秒）`**（`workflow_settings.timeout_seconds`，默认 `1800`），配合 AstrBot 的 `工具调用超时时间` 一起调大即可。
-- **超时提示更明确**：超时文案会带上实际等待秒数并提示去哪个配置项调大；工作流内部报错时直接返回 `工作流执行失败: ...` 而不是等到超时。
-- **自动识别节点 ID**：当配置的 `input_node_id` / `neg_node_id` / `output_node_id` 与当前工作流的节点不匹配时，会自动从图中推断正确的节点并打印 `[ComfyUI] 配置的节点 ID 不适用于工作流 ...，已自动识别: ...`，换工作流后不必手动改 ID。
-- **输入节点缺失时报错更可读**：由原本的静默失败改为明确提示“请检查插件配置里的 input_node_id，或把工作流改成 API 格式”。
-- **标签泄漏修复**：模型偶尔会输出 `<render>`、`</think>`、`</final>`、`<system_reminder>` 等没有渲染器的包裹标签，配合分段发送会原样漏到聊天里。现在统一剥离，并在系统提示词中禁止输出包裹标签。
-- **中文引号兼容**：模型写 `<pic prompt=“...”>`（中文弯引号）时不再匹配失败，`prompt` 里的中文/全角引号会先归一化。
-- **中文提示词自动转英文 tags**：提示词里含中文时先调用当前会话模型翻译成 Danbooru 风格 tags，失败则回退原文。
-- **正向提示词清理**：自动剔除被误写进正向提示词里的 `low quality` / `watermark` / `bad anatomy` 等负面词。
-- **避免重复绘图**：工具已经出过图时抑制同一轮回复里 `<pic>` 标签的二次自动绘图。
-- **工作流编号排除自带模板**：`workflow_api.json` 是首次安装时从插件目录复制的模板，`/comfy_ls` 与 `/comfy_use` 不再把它算进编号，只在它正好是当前工作流时单独提示一行。
+- **修复慢速工作流被误判“生成超时”**：等待上限原本硬编码 300 秒，实测 1100–1200 秒的工作流必然失败。改为可配置 `workflow_settings.timeout_seconds`（默认 1800）。
+- **超时提示更明确**：带上实际等待秒数并提示去哪个配置项调大；工作流内部报错时直接返回 `工作流执行失败: ...`，不再干等到超时。
+- **自动识别节点 ID**：配置的节点与工作流不匹配时自动推断并打印日志，换工作流不必手动改 ID。
+- **输入节点缺失时报错可读**：从静默失败改为明确提示检查 `input_node_id` 或改用 API 格式。
+- **标签泄漏修复**：统一剥离 `<render>` / `</think>` / `</final>` / `<system_reminder>` 等无渲染器的包裹标签，并在提示词里禁止输出。
+- **中文引号兼容**：`<pic prompt=“...”>` 不再匹配失败。
+- **中文提示词自动转英文 tags**：含中文时先调用当前会话模型翻译，失败回退原文。
+- **正向提示词清理**：剔除误写进正向的 `low quality` / `watermark` / `bad anatomy` 等负面词。
+- **避免重复绘图**：工具已出图时，抑制同一轮回复里 `<pic>` 的二次自动绘图。
+- **工作流编号排除自带模板**：`/comfy_ls` 与 `/comfy_use` 不再把 `workflow_api.json` 算进序号。
+
+### v2.0
+
+- 数据持久化改造：工作流、图片、敏感词迁到 `plugin_data`，升级不再丢失。
+- 首次安装自动初始化默认工作流与敏感词库。
+- 按节点 ID 的步数覆盖功能（`/comfy_add`）。
+- 提示信息全部改为说明具体原因，不再只回一句“禁止输入”。
+- 统一使用 `pathlib` 处理路径，重构权限检查逻辑。
+
+### 加固说明
+
+- `server_address` 自动归一化：去首尾空格、缺协议补 `http://`、去尾部 `/`
+- HTTP 请求带默认超时，不再无限等待
+- 瞬时失败（`429` / `502` / `503` / `504`）自动退避重试
+- 已有配置保持兼容，填完整 URL 的行为不变
+
+> 如果你的 ComfyUI 挂在反向代理后面，记得把上游超时预算调够——出图是长任务，代理默认 60 秒就会断开。
 
 ---
 
-## Hardening Notes
+## 许可
 
-This plugin now applies a few compatibility-preserving safety defaults:
-
-- `server_address` values are normalized automatically:
-  - surrounding whitespace is trimmed
-  - missing scheme defaults to `http://`
-  - trailing `/` is removed
-- HTTP requests now use sane default timeouts instead of waiting forever
-- transient API failures (for example `429`, `502`, `503`, `504`) are retried with backoff
-- existing configs remain valid; if you already provide a full URL, behavior is unchanged
-
-### Recommended configuration hygiene
-
-- Prefer a direct ComfyUI URL such as `http://127.0.0.1:8188`
-- Avoid trailing slashes in `server_address`
-- If your ComfyUI runs behind a reverse proxy, make sure long-running requests are allowed enough upstream timeout budget
-- Treat workflow execution as asynchronous and expect queue wait time under load
-
+见 [LICENSE](LICENSE)。原插件作者 [lumingya](https://github.com/lumingya/astrbot_plugin_comfyui_pro)，本仓库为其维护分支。

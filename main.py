@@ -568,6 +568,110 @@ class ComfyUIPlugin(Star):
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
 
+    # ------------------------------------------------------------------
+    # 未包裹的「导演笔记」兜底
+    # ------------------------------------------------------------------
+    # 模型偶尔不按格式输出，把规划写进正文（而不是放进 <think>），
+    # 这些句子没有任何标签可供剥离，Splitter 又会按标点切段照发，
+    # 于是「我需要给出 pic prompt」这类内容会直接出现在聊天里。
+    _PLANNING_MARKERS = (
+        "然后正文",
+        "然后继续正文",
+        "写 prompt",
+        "写prompt",
+        "给出 pic prompt",
+        "给出pic prompt",
+        "按规则输出",
+        "输出 think",
+        "先输出",
+        "我需要给出",
+        "保持简洁",
+        "避免重复",
+        "注意角色扮演",
+        "回复不要太长",
+        "语气平淡",
+        "这里就画一个",
+        "我需要",
+        "我应该",
+        "可以设定",
+        "直接输出即可",
+        "历史已说过",
+    )
+
+    # 认定「开头是导演笔记」时最多考察的句子数
+    _PLANNING_WINDOW = 8
+    # 首个特征句必须出现在前几句内，否则判定为正常台词里的偶发用词
+    _PLANNING_FIRST_HIT_LIMIT = 2
+
+    @classmethod
+    def _planning_marker_hits(cls, sentence: str) -> int:
+        """统计一句里出现的导演笔记特征词数量。
+
+        按长度降序匹配并消费已命中片段，避免「我需要」重复计入「我需要给出」。
+        """
+        if not isinstance(sentence, str) or not sentence:
+            return 0
+        lowered = sentence.lower()
+        hits = 0
+        for marker in sorted(cls._PLANNING_MARKERS, key=len, reverse=True):
+            key = marker.lower()
+            if key and key in lowered:
+                hits += 1
+                lowered = lowered.replace(key, "\x00")
+        return hits
+
+    @classmethod
+    def _strip_planning_prefix(cls, text: str) -> str:
+        """丢弃正文里的导演笔记句子。
+
+        模型偶尔不把「我需要给出 pic prompt」「保持简洁」「避免重复」这类笔记写进
+        <think>，而是直接写进正文；这些句子没有标签可供剥离，Splitter 又会按标点
+        切段照发，于是笔记就出现在聊天里。
+
+        判定：全文命中句 >= 2 且命中次数 >= 3 才认定存在笔记区，然后丢弃到最后一个
+        命中句为止（笔记区里夹杂的无特征句也一并丢弃）。正常台词里偶尔出现的「我应该」
+        达不到这个密度，因此不会被误删。若整段都是笔记，返回空串——宁可这条不发，也
+        不把导演笔记发给用户。
+        """
+        if not isinstance(text, str) or not text.strip():
+            return text
+
+        sentences = re.split(r"(?<=[。！？!?…\n])", text)
+        if len(sentences) < 3:
+            return text
+
+        hit_sentences = 0
+        total_hits = 0
+        first_hit = -1
+        last_hit = -1
+        for idx, sentence in enumerate(sentences):
+            hits = cls._planning_marker_hits(sentence)
+            if hits:
+                hit_sentences += 1
+                total_hits += hits
+                if first_hit < 0:
+                    first_hit = idx
+                last_hit = idx
+
+        if hit_sentences < 2 or total_hits < 3 or last_hit < 0:
+            return text
+        # 导演笔记通常出现在正文开头；特征词若直到中后段才零星出现，多半是正常台词。
+        # 但若特征非常密集（多句多词），即使开头是铺垫句也按笔记处理。
+        dense = hit_sentences >= 4 and total_hits >= 6
+        if not dense and first_hit > cls._PLANNING_FIRST_HIT_LIMIT:
+            return text
+
+        # 最后一个命中句之后必须还有正文，且不能太靠尾部
+        if last_hit >= len(sentences) - 1:
+            return ""
+        if last_hit > int(len(sentences) * 0.8):
+            return text
+
+        remainder = "".join(sentences[last_hit + 1 :]).strip()
+        if len(remainder) < 2:
+            return ""
+        return remainder
+
     @staticmethod
     def _count_visible_text_length(text: str) -> int:
         if not isinstance(text, str):
@@ -2016,15 +2120,31 @@ class ComfyUIPlugin(Star):
 
     @filter.command("当前工作流", aliases=["comfy_current", "当前wf"])
     async def cmd_comfy_current(self, event: AstrMessageEvent):
-        current_file = self.config.get("json_file") or self.config.get("workflow_json") or "未配置"
-        input_id = self.config.get("input_node_id") or self.config.get("input_id") or "未配置"
-        output_id = self.config.get("output_node_id") or self.config.get("output_id") or "未配置"
+        api = self.api
+        current_file = api.wf_filename or "未配置"
+        input_id = api.input_id or "未配置"
+        node = {}
+        auto_note = ""
+        try:
+            wf = api._load_workflow()
+            node = wf.get(str(input_id)) or {}
+            if not api._is_positive_text_node(wf, input_id):
+                auto_note = "（⚠️ 该节点不是采样器的正向文本节点，出图时会自动纠正）"
+        except Exception:
+            node = {}
         lines = [
             "🧠 当前 ComfyUI 工作流",
             f"- 文件: {current_file}",
-            f"- 输入节点: {input_id}",
-            f"- 输出节点: {output_id}",
+            f"- 正向节点: {input_id}{auto_note}",
+            f"- 负面节点: {api.neg_node_id or '未配置（自动识别）'}",
+            f"- 输出节点: {api.output_id or '自动'}",
         ]
+        if node:
+            text = str((node.get("inputs") or {}).get("text", "")).strip()
+            if isinstance((node.get("inputs") or {}).get("text"), list):
+                text = "(由上游节点提供，插件不写入)"
+            if text:
+                lines.append(f"- 该节点当前文本: {text[:80]}")
         yield event.plain_result("\n".join(lines))
 
     @filter.command("测试lora", aliases=["lora_test", "lora测试"])
@@ -2371,6 +2491,16 @@ class ComfyUIPlugin(Star):
     
         full_text = resp.completion_text
         cleaned_text = self._strip_comfy_control_tags(full_text, remove_think=True)
+        # 模型偶尔把导演笔记直接写进正文（无标签可剥），这里再做一层兜底
+        planning_free = self._strip_planning_prefix(cleaned_text)
+        if planning_free != cleaned_text:
+            logger.warning(
+                "[ComfyUI] 🧹 已剥离正文开头的规划文本: %s",
+                cleaned_text[:60].replace("\n", " "),
+            )
+            cleaned_text = planning_free
+            resp.completion_text = cleaned_text
+            resp.result_chain = MessageChain().message(cleaned_text)
         cleaned_entries = self._extract_usable_prompt_entries(full_text)
         supplemented_entries = await self._generate_force_draw_prompt_entries(
             event,

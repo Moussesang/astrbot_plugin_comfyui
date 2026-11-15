@@ -1078,31 +1078,59 @@ class ComfyUI:
             return value[0]
         return None
 
-    def _detect_node_ids(self, workflow):
-        """Pick prompt/negative/output nodes from the graph when configured ids are stale."""
-        found = {}
-        for nid, node in workflow.items():
-            if not isinstance(node, dict) or "KSampler" not in str(node.get("class_type", "")):
+    @staticmethod
+    def _sampler_link_pairs(workflow):
+        """Collect (positive_id, negative_id) link pairs from every sampler-like node."""
+        pairs = []
+        for _, node in workflow.items():
+            if not isinstance(node, dict):
+                continue
+            if "KSampler" not in str(node.get("class_type", "")):
                 continue
             inputs = node.get("inputs", {}) if isinstance(node.get("inputs"), dict) else {}
-            pos = self._ref_node_id(inputs.get("positive"))
-            neg = self._ref_node_id(inputs.get("negative"))
-            if pos and self._has_text_input(workflow, pos) and "input" not in found:
+            pairs.append(
+                (
+                    ComfyUI._ref_node_id(inputs.get("positive")),
+                    ComfyUI._ref_node_id(inputs.get("negative")),
+                )
+            )
+        return pairs
+
+    def _detect_node_ids(self, workflow):
+        """Pick prompt/negative/output nodes from the graph when configured ids are stale.
+
+        Positive 只认采样器 positive 连线指向的文本节点，且绝不采用任何采样器的
+        negative 目标，避免把用户提示词写进负面提示词节点；negative 仅作为参考值
+        返回，是否采用由调用方决定。
+        """
+        found = {}
+        pairs = self._sampler_link_pairs(workflow)
+        negative_ids = {neg for _, neg in pairs if neg}
+        positive_ids = [pos for pos, _ in pairs if pos]
+
+        for pos in positive_ids:
+            if pos not in negative_ids and self._has_text_input(workflow, pos) and "input" not in found:
                 found["input"] = pos
-            if neg and self._has_text_input(workflow, neg) and "neg" not in found:
-                found["neg"] = neg
-            if "input" in found and "neg" in found:
-                break
         if "input" not in found:
             for nid, node in workflow.items():
-                if isinstance(node, dict) and self._has_text_input(workflow, nid):
+                if (
+                    isinstance(node, dict)
+                    and str(nid) not in negative_ids
+                    and self._has_text_input(workflow, nid)
+                ):
                     found["input"] = str(nid)
                     break
+
+        for _, neg in pairs:
+            if neg and self._has_text_input(workflow, neg):
+                found["neg"] = neg
+                break
         if "neg" not in found:
             for nid, node in workflow.items():
                 if str(nid) != found.get("input") and self._has_text_input(workflow, nid):
                     found["neg"] = str(nid)
                     break
+
         for nid, node in workflow.items():
             if isinstance(node, dict) and node.get("class_type") in ("SaveImage", "PreviewImage"):
                 found["output"] = str(nid)
@@ -1119,24 +1147,57 @@ class ComfyUI:
             return False
         return "TextEncode" in str(node.get("class_type", "")) and "clip" in inputs
 
+    def _is_positive_text_node(self, workflow, node_id):
+        """True 仅当该节点是文本节点且没有被任何采样器当作 negative 使用。
+
+        采样器存在 positive 连线时，还要求节点确实出现在 positive 目标里，
+        这样即便配置误填成负面提示词节点也不会被当成正向节点写入。
+        """
+        if not self._has_text_input(workflow, node_id):
+            return False
+        pairs = self._sampler_link_pairs(workflow)
+        negative_ids = {neg for _, neg in pairs if neg}
+        positive_ids = {pos for pos, _ in pairs if pos}
+        if str(node_id) in negative_ids:
+            return False
+        if positive_ids and str(node_id) not in positive_ids:
+            return False
+        return True
+
     @staticmethod
     def _is_output_node(workflow, node_id):
         node = workflow.get(str(node_id)) if node_id else None
         return isinstance(node, dict) and node.get("class_type") in ("SaveImage", "PreviewImage")
 
     def _ensure_node_ids(self, workflow):
-        """Fall back to graph auto-detection when the configured ids are missing or the wrong kind of node."""
+        """Fix a stale or wrong-kind positive/output id.
+
+        负面节点 ID 尊重用户配置：非空时永不自动改写，只有配置为空时才补一个参考值。
+        """
         detected = self._detect_node_ids(workflow)
         changes = []
-        if not self._has_text_input(workflow, self.input_id) and self._has_text_input(workflow, detected.get("input")):
-            self.input_id = detected["input"]
-            changes.append(f"input={self.input_id}")
-        if self.neg_node_id and not self._has_text_input(workflow, self.neg_node_id) and self._has_text_input(workflow, detected.get("neg")):
+
+        if not self._is_positive_text_node(workflow, self.input_id):
+            candidate = detected.get("input")
+            if candidate and self._is_positive_text_node(workflow, candidate):
+                if self.input_id and self._has_text_input(workflow, self.input_id):
+                    logger.warning(
+                        f"[ComfyUI] 配置的正向节点 {self.input_id} 实际是负面提示词节点，"
+                        f"已改用 {candidate}，避免提示词写进负面条件"
+                    )
+                self.input_id = candidate
+                changes.append(f"input={self.input_id}")
+
+        if not self.neg_node_id and self._has_text_input(workflow, detected.get("neg")):
             self.neg_node_id = detected["neg"]
-            changes.append(f"neg={self.neg_node_id}")
+            logger.info(
+                f"[ComfyUI] 未配置负面节点，工作流 {self.wf_filename} 自动识别为 {self.neg_node_id}"
+            )
+
         if not self._is_output_node(workflow, self.output_id) and self._is_output_node(workflow, detected.get("output")):
             self.output_id = detected["output"]
             changes.append(f"output={self.output_id}")
+
         if changes:
             logger.warning(
                 f"[ComfyUI] 配置的节点 ID 不适用于工作流 {self.wf_filename}，已自动识别: "
