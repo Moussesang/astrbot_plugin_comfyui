@@ -67,6 +67,10 @@ class ComfyUIPlugin(Star):
         "long neck", "watermark", "watermarksignature", "signature", "username",
         "artist name", "trademark", "text", "logo", "cropped", "error", "ugly",
         "terrible", "artifacts", "score_1", "score_2", "score_3",
+        "score_4", "score_5", "score_6",
+        "fused fingers", "malformed limbs", "mutated hands", "mutated limbs",
+        "inaccurate limb", "inaccurate limbs", "inaccurate eyes",
+        "extra hands", "extra feet", "bad feet", "words", "jpeg",
     })
 
     def __init__(self, context: Context, config: dict):

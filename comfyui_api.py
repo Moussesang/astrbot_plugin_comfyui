@@ -1205,9 +1205,86 @@ class ComfyUI:
             )
         return bool(changes)
 
+    @staticmethod
+    def _normalize_tag_text(tag):
+        """把 tag 归一化到可比较的形式：去括号/权重、下划线转空格、小写、压缩空白。"""
+        if not isinstance(tag, str):
+            return ""
+        text = tag.strip().strip("()[]{} ").strip()
+        text = re.sub(r":\s*[\d.]+\s*$", "", text).strip()
+        text = text.replace("_", " ").lower()
+        return re.sub(r"\s+", " ", text).strip()
+
+    @classmethod
+    def _split_tag_text(cls, text):
+        """按未被括号包裹的逗号切分 tag 列表（保留 (tag:1.2) 这类权重语法）。"""
+        if not isinstance(text, str) or not text.strip():
+            return []
+        return [part.strip() for part in re.split(r",(?![^()]*\))", text) if part.strip()]
+
+    def _negative_tag_set(self, workflow):
+        """工作流负面节点与配置 negative_prompt 里出现的 tag 集合。
+
+        配置里的 neg_node_id 可能指向一个已不存在于当前工作流的节点（换工作流后很常见），
+        这种情况下按采样器的 negative 连线回退取值，避免负面词过滤失效。
+        """
+        tags = set()
+        candidate_ids = []
+        if self.neg_node_id:
+            candidate_ids.append(str(self.neg_node_id))
+        detected_neg = self._detect_node_ids(workflow).get("neg")
+        if detected_neg and str(detected_neg) not in candidate_ids:
+            candidate_ids.append(str(detected_neg))
+
+        for node_id in candidate_ids:
+            if not node_id or str(node_id) == str(self.input_id):
+                continue
+            node = workflow.get(node_id)
+            if not isinstance(node, dict):
+                continue
+            inputs = node.get("inputs") or {}
+            for key in ("text", "string", "negative", "text_negative", "prompt"):
+                value = inputs.get(key)
+                if isinstance(value, str) and value.strip():
+                    tags.update(
+                        self._normalize_tag_text(item)
+                        for item in self._split_tag_text(value)
+                    )
+                    break
+        tags.update(
+            self._normalize_tag_text(item)
+            for item in self._split_tag_text(self.neg_prompt or "")
+        )
+        tags.discard("")
+        return tags
+
+    def _strip_negative_tags(self, workflow, prompt):
+        """把误写进正向提示词的负面 tag 去掉，保证负面词只出现在负面节点里。"""
+        if not isinstance(prompt, str) or not prompt.strip():
+            return prompt, []
+        negatives = self._negative_tag_set(workflow)
+        if not negatives:
+            return prompt, []
+        kept = []
+        removed = []
+        for tag in self._split_tag_text(prompt):
+            if self._normalize_tag_text(tag) in negatives:
+                removed.append(tag)
+            else:
+                kept.append(tag)
+        if not kept:
+            return prompt, []
+        return ", ".join(kept), removed
+
     def _inject_params(self, workflow, prompt, lora_selections=None):
         """Inject prompt, optional LoRA selections, steps overrides, and seeds into workflow."""
         self._ensure_node_ids(workflow)
+        prompt, removed_negative = self._strip_negative_tags(workflow, prompt)
+        if removed_negative:
+            logger.info(
+                f"[ComfyUI] 已从正向提示词移除 {len(removed_negative)} 个与负面提示词重复的 tag: "
+                + ", ".join(removed_negative)
+            )
         node = workflow.get(self.input_id)
         if not node:
             message = (
