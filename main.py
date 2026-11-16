@@ -569,8 +569,45 @@ class ComfyUIPlugin(Star):
             r"<system_reminder>.*?</system_reminder>", "", cleaned, flags=re.DOTALL | re.IGNORECASE
         )
         cleaned = re.sub(r"</?system_reminder>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = ComfyUIPlugin._strip_prompt_residue(cleaned)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
+
+    # ------------------------------------------------------------------
+    # <pic> 剥离后的英文指令碎片
+    # ------------------------------------------------------------------
+    # 模型有时把格式本身念出来："then <pic ...> then body text."。
+    # 标签被剥掉以后，剩下的 then / body text 这类英文连接词就成了正文，
+    # Splitter 会原样发出去（2026-11-16 23:32 真实案例："then  then body text.白的这个"）。
+    _PROMPT_RESIDUE_WORDS = frozenset({
+        "then", "and", "next", "finally", "so", "now", "first", "second",
+        "third", "body", "text", "prompt", "tag", "tags", "image", "images",
+        "picture", "pic", "output", "write", "give", "add", "insert", "reply",
+        "respond", "answer", "content", "continue", "here", "is", "the", "a",
+        "an", "with", "in", "of", "to", "it", "this", "that",
+    })
+
+    @classmethod
+    def _strip_prompt_residue(cls, text: str) -> str:
+        """剥离 <pic> 标签消失后残留的英文指令碎片。
+
+        只在「开头是纯英文指令词 + 紧跟中文正文」时才动手：这类前缀里每个单词都必须是
+        格式说明词（then / body / text / prompt ...），否则视为正常英文台词，不做处理。
+        """
+        if not isinstance(text, str) or not text:
+            return text
+        match = re.match(r"^([\sA-Za-z,.;:!?'\"()\-]*?)(?=[\u4e00-\u9fff])", text)
+        if not match:
+            return text
+        prefix = match.group(1)
+        if not prefix.strip():
+            return text
+        words = re.findall(r"[A-Za-z]+", prefix)
+        if not words or len(words) > 12:
+            return text
+        if any(word.lower() not in cls._PROMPT_RESIDUE_WORDS for word in words):
+            return text
+        return text[len(prefix):].lstrip()
 
     # ------------------------------------------------------------------
     # 未包裹的「导演笔记」兜底
@@ -2558,6 +2595,7 @@ class ComfyUIPlugin(Star):
                 text = re.sub(r'</pic>', '', text, flags=re.IGNORECASE)
                 text = re.sub(r'<lora\s+picks=".*?"\s*/?>', '', text, flags=re.DOTALL | re.IGNORECASE)
                 text = re.sub(r'</?render\b[^>]*>', '', text, flags=re.IGNORECASE)
+                text = self._strip_prompt_residue(text)
                 text = text.strip()
                 if text:
                     segments.append({"type": "text", "content": text})
