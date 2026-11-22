@@ -1500,6 +1500,56 @@ class ComfyUI:
 
         return override_count
 
+    def _img2img_target_pixels(self, workflow):
+        """图生图目标像素量：优先取 Latent/Params 类节点的 width/height 字面量。"""
+        preferred = None
+        fallback = None
+        for node in workflow.values():
+            if not isinstance(node, dict):
+                continue
+            ins = node.get("inputs", {})
+            if not isinstance(ins, dict):
+                continue
+            w, h = ins.get("width"), ins.get("height")
+            if not (isinstance(w, int) and isinstance(h, int) and 0 < w <= 8192 and 0 < h <= 8192):
+                continue
+            name = str(node.get("class_type", "")).lower()
+            px = w * h
+            if "latent" in name or "params" in name:
+                if preferred is None or px > preferred:
+                    preferred = px
+            elif fallback is None or px > fallback:
+                fallback = px
+        return preferred or fallback
+
+    def _prepare_img2img_input(self, image_path, workflow):
+        """QQ 压缩图常低于工作流目标分辨率：Lanczos 等比放大到目标像素量。
+        返回 (上传路径, 临时文件或 None)；无 PIL 或已达标时原样返回。"""
+        try:
+            from PIL import Image as PILImage
+        except ImportError:
+            return image_path, None
+        try:
+            with PILImage.open(image_path) as im:
+                w, h = im.size
+                target = self._img2img_target_pixels(workflow)
+                if not target or w * h >= target * 0.9:
+                    return image_path, None
+                scale = (target / (w * h)) ** 0.5
+                nw = max(8, round(w * scale / 8) * 8)
+                nh = max(8, round(h * scale / 8) * 8)
+                up = im.convert("RGB").resize((nw, nh), PILImage.LANCZOS)
+                base = getattr(self, "data_dir", None)
+                import tempfile
+                folder = base if base else pathlib_Path(tempfile.gettempdir())
+                folder.mkdir(parents=True, exist_ok=True)
+                tmp = folder / f"redraw_upscale_{os.urandom(4).hex()}.png"
+                up.save(tmp, format="PNG")
+                logger.info(f"[ComfyUI] img2img 输入过小（{w}x{h}），已放大到 {nw}x{nh} 以匹配工作流分辨率")
+                return str(tmp), tmp
+        except Exception as exc:
+            logger.warning(f"[ComfyUI] img2img 输入预处理失败，使用原图: {exc}")
+            return image_path, None
     def _find_native_image_node(self, workflow):
         """工作流自带且唯一的 LoadImage 节点 id；没有或多个则返回 None。"""
         load_ids = [
@@ -1611,16 +1661,25 @@ class ComfyUI:
         """Generate with an input image: upload it, convert the current
 
         workflow into image-to-image, then submit and wait like generate()."""
-        up_name, err = await self.upload_image(image_path)
-        if not up_name:
-            return None, err
-
         try:
             workflow = self._load_workflow()
         except Exception as e:
             return None, str(e)
 
         native_image_id = self._find_native_image_node(workflow)
+        upload_src, upscale_tmp = image_path, None
+        if not native_image_id:
+            upload_src, upscale_tmp = self._prepare_img2img_input(image_path, workflow)
+        try:
+            up_name, err = await self.upload_image(upload_src)
+            if not up_name:
+                return None, err
+        finally:
+            if upscale_tmp:
+                try:
+                    os.remove(upscale_tmp)
+                except OSError:
+                    pass
         if native_image_id:
             # 原生图生图工作流（自带 LoadImage，如 K2 图生三次元）：只把图片填进
             # 工作流自带的输入节点，保留其自带提示词与潜空间链路。
