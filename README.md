@@ -49,6 +49,7 @@ ComfyUI 的工作流是图灵完备的，任何试图把参数抽象成开关的
 | **LoRA 堆控制** | 可选：把工作流里的 LoRA 清单注入提示词，让 LLM 自己挑 LoRA（含触发词） |
 | **分级敏感词** | `none / lite / full` 三档，群聊与私聊可分别设置，白名单群可逐群覆盖 |
 | **访问控制** | 群白名单、全局锁定、冷却时间、管理员特权（无视冷却/白名单/敏感词） |
+| **视图页** | WebUI 插件页自带「ComfyUI 画图」视图：状态总览、历史画廊（缩略图加载）、原图查看/下载、切换工作流、删除记录与图片 |
 | **标签自净** | `<pic>` `<think>` `<render>` `<final>` `<system_reminder>` 等包裹标签一律剥离，不会漏到聊天里 |
 
 ---
@@ -379,6 +380,12 @@ data/plugins/astrbot_plugin_comfyui_pro/   # ⚠️ 插件代码，升级会覆�
 ---
 
 ## 十、更新日志
+
+### v2.7
+
+- **新增插件视图页**：WebUI 插件管理页出现「ComfyUI 画图」入口。功能包括：服务器探活与当前工作流/尺寸/出图总数总览；历史画廊（生成记录与输出目录合并，缩略图经 PIL 缓存加载，浏览不卡）；点开任意图片查看原图、提示词、工作流、LoRA、来源与用户，可下载或删除（删除会连同缩略图与历史记录一起清理）；不重载插件直接切换工作流。
+- **新增历史记录**：每次出图自动把文件名、提示词、工作流、尺寸、LoRA、来源、用户写入 `plugin_data/astrbot_plugin_comfyui_pro/history.jsonl`，供视图页画廊使用。
+- **视图页 API 走 AstrBot 插件 web_api**：`page/status`、`page/history`、`page/thumb`、`page/image`、`page/workflows`、`page/switch-workflow`、`page/delete` 七个路由，`page/image` 读取做了路径校验，防目录穿越。
 
 ### v2.6
 

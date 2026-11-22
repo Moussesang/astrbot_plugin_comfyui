@@ -14,6 +14,20 @@ from astrbot.api.message_components import *
 from astrbot.api import llm_tool, logger
 from astrbot.api.provider import LLMResponse
 from astrbot.core.message.message_event_result import MessageChain
+# 视图页 web_api 兼容导入（quart 可用时直接读 request）
+try:
+    from quart import jsonify as _quart_jsonify
+    from quart import request as _quart_request
+except Exception:
+    _quart_jsonify = None
+    _quart_request = None
+try:
+    from PIL import Image as PILImage
+    HAS_PIL = True
+except Exception:
+    PILImage = None
+    HAS_PIL = False
+
 # 尝试导入 StarTools（兼容不同版本）
 try:
     from astrbot.api.star import StarTools
@@ -41,6 +55,11 @@ class _ComfyImageMarker:
 class ComfyUIPlugin(Star):
     _FORCE_DRAW_CONTEXT_LIMIT = 12
     _FORCE_DRAW_MIN_REPLY_LENGTH = 100
+    # 意图触发兜底：用户消息明确要求画图的正则（排除 规划/计划 等误命中）
+    _DRAW_INTENT_PATTERN = re.compile(
+        r"画|拍一?张|来一?张|photo|draw|picture",
+        re.IGNORECASE,
+    )
     _DRAW_FAILURE_CONTEXT_TTL_SECONDS = 600
     _DRAW_FAILURE_CONTEXT_LIMIT = 5
     _PIC_PROMPT_TAG_PATTERN = re.compile(
@@ -88,6 +107,10 @@ class ComfyUIPlugin(Star):
         self.workflow_dir = self.data_dir / "workflow"
         self.output_dir = self.data_dir / "output"
         self.sensitive_words_path = self.data_dir / "sensitive_words.json"
+        self.history_path = self.data_dir / "history.jsonl"
+        self.thumb_dir = self.data_dir / "thumb_cache"
+        self._page_lock = asyncio.Lock()
+
         
         # ====== 4. 更新 UI 配置 ======
         self._auto_update_schema()
@@ -1180,13 +1203,91 @@ class ComfyUIPlugin(Star):
 
         return cleaned_entries
 
+    def _user_requests_draw(self, event: AstrMessageEvent) -> bool:
+        """判断当前用户消息是否明确要求画图（意图触发兜底用）。"""
+        try:
+            text = (event.message_str or event.get_plain_text() or "").strip()
+        except Exception:
+            return False
+        if not text or len(text) > 100:
+            return False
+        return bool(self._DRAW_INTENT_PATTERN.search(text))
+
+    _REASONING_TAG_LINE = re.compile(
+        r"\b(?:prompt|tags|提示词)\b\s*[:：]\s*([^\n]+)",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _looks_like_tag_line(line: str) -> bool:
+        """英文 SD tags 行：至少 2 个半角逗号、长度足够、几乎全 ASCII。"""
+        line = line.strip()
+        if len(line) < 10 or line.count(",") < 2:
+            return False
+        non_ascii = sum(1 for ch in line if ord(ch) > 127)
+        return non_ascii <= 2
+
+    def _extract_tags_from_reasoning(self, reasoning_text: str | None) -> list[str]:
+        """从模型 think / reasoning 内容里提取已规划好的 SD tags（免二次 LLM 调用）。"""
+        if not reasoning_text:
+            return []
+        labeled: list[str] = []
+        unlabeled: list[str] = []
+        for m in self._REASONING_TAG_LINE.finditer(reasoning_text):
+            line = m.group(1).strip().strip('`"\'')
+            if self._looks_like_tag_line(line):
+                labeled.append(line)
+        if not labeled:
+            for raw in reasoning_text.splitlines():
+                line = raw.strip().strip('`"\'')
+                if self._looks_like_tag_line(line) and line not in unlabeled:
+                    unlabeled.append(line)
+        chosen = labeled if labeled else unlabeled
+        # 去重保序；多个候选时取最后一个（通常是模型最终敲定的画面）
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for line in chosen:
+            key = re.sub(r"\s+", "", line).lower()
+            if key not in seen:
+                seen.add(key)
+                uniq.append(line)
+        return uniq
+
+    def _enforce_self_draw_anchor(self, event: AstrMessageEvent, entries: list[dict]) -> list[dict]:
+        """用户要求画「你自己」时，把人设 tags 强制注入 prompt（配置 llm_settings.self_draw_anchor）。"""
+        llm_settings = self.config.get("llm_settings", {}) or {}
+        anchor = llm_settings.get("self_draw_anchor") or {}
+        if not anchor.get("enabled", False) or not entries:
+            return entries
+        message_text = (getattr(event, "message_str", "") or "")
+        keywords = anchor.get("trigger_keywords") or []
+        if not keywords or not any(k in message_text for k in keywords):
+            return entries
+        prepend_tags = [t for t in (anchor.get("prepend_tags") or []) if t]
+        ensure_tags = [t for t in (anchor.get("ensure_tags") or []) if t]
+        patched: list[dict] = []
+        for item in entries:
+            prompt = item.get("prompt") or ""
+            prompt_norm = re.sub(r"[\s_]+", " ", prompt.lower())
+            missing_ensure = [t for t in ensure_tags if t.lower() not in prompt_norm]
+            existing = {t.strip().lower() for t in prompt.split(",") if t.strip()}
+            to_prepend = [t for t in prepend_tags if t.lower() not in existing]
+            if to_prepend or missing_ensure:
+                prompt = ", ".join(to_prepend + [prompt] + missing_ensure) if prompt else ", ".join(to_prepend + missing_ensure)
+                logger.info(f"[ComfyUI] 🧷 人设锚点已注入: +{', '.join(to_prepend + missing_ensure)}")
+            new_item = dict(item)
+            new_item["prompt"] = prompt
+            patched.append(new_item)
+        return patched
+
     async def _generate_force_draw_prompt_entries(
         self,
         event: AstrMessageEvent,
         latest_reply_text: str,
         current_entries: list[dict] | None = None,
+        force: bool = False,
     ) -> list[dict]:
-        if not self.force_draw_when_no_prompt:
+        if not (self.force_draw_when_no_prompt or force):
             return []
 
         current_entries = list(current_entries or [])
@@ -1202,7 +1303,7 @@ class ComfyUIPlugin(Star):
             remove_think=True,
         )
         reply_length = self._count_visible_text_length(latest_reply_text)
-        if reply_length < self._FORCE_DRAW_MIN_REPLY_LENGTH:
+        if reply_length < self._FORCE_DRAW_MIN_REPLY_LENGTH and not force:
             logger.info(
                 "[ComfyUI] 跳过强制画图兜底：当前回复长度为 %s，小于阈值 %s",
                 reply_length,
@@ -1357,6 +1458,314 @@ class ComfyUIPlugin(Star):
     async def initialize(self):
         self.context.activate_llm_tool("comfyui_txt2img")
         logger.info("[ComfyUI] 🎨 插件初始化完成，LLM 工具已激活")
+        self._register_page_apis()
+
+
+    # ====== 视图页 Web API（ComfyUI 画图） ======
+    def _register_page_apis(self):
+        """注册 ComfyUI 画图视图页所需的 web_api 路由"""
+        context = getattr(self, "context", None)
+        register = getattr(context, "register_web_api", None)
+        if not callable(register):
+            logger.warning("[ComfyUI] 视图页 web_api 注册失败：context 不支持 register_web_api")
+            return
+        routes = (
+            ("page/status", self.page_status, ["GET"], "ComfyUI 页面状态"),
+            ("page/history", self.page_history, ["GET"], "ComfyUI 出图历史"),
+            ("page/thumb", self.page_thumb, ["GET"], "ComfyUI 图片缩略图"),
+            ("page/image", self.page_image, ["GET"], "ComfyUI 原图"),
+            ("page/workflows", self.page_workflows, ["GET"], "ComfyUI 工作流列表"),
+            ("page/switch-workflow", self.page_switch_workflow, ["POST"], "ComfyUI 切换工作流"),
+            ("page/delete", self.page_delete, ["POST"], "ComfyUI 删除出图记录"),
+        )
+        plugin_name = getattr(self, "plugin_name", None) or "astrbot_plugin_comfyui_pro"
+        for endpoint, handler, methods, description in routes:
+            route_path = f"/{plugin_name}/{endpoint}"
+            try:
+                register(route_path, handler, methods, description)
+            except TypeError:
+                register(route_path, handler, methods)
+        logger.info(f"[ComfyUI] 🖥️ 视图页 web_api 已注册（{len(routes)} 个路由）")
+
+    async def _page_params(self) -> dict:
+        params = {}
+        if _quart_request is not None:
+            try:
+                args = _quart_request.args
+                params = {str(k): v for k, v in args.items(multi=False)}
+            except Exception:
+                params = dict(_quart_request.args)
+        return params
+
+    async def _page_body(self) -> dict:
+        if _quart_request is None:
+            return {}
+        try:
+            data = await _quart_request.get_json(silent=True)
+        except Exception:
+            data = None
+        return data if isinstance(data, dict) else {}
+
+    def _persisted_output_dir(self) -> Path:
+        base = self._get_persistent_dir()
+        return Path(base) / "output"
+
+    def _safe_output_image(self, filename) -> "Path | None":
+        """校验文件名确实指向 output 目录内的图片，防目录穿越"""
+        name = str(filename or "").strip()
+        if not name or "/" in name or "\\" in name or ".." in name:
+            return None
+        try:
+            output_dir = self._persisted_output_dir().resolve()
+            candidate = (output_dir / name).resolve()
+            if candidate.parent != output_dir:
+                return None
+            if not candidate.is_file():
+                return None
+            return candidate
+        except Exception:
+            return None
+
+    def _read_history_records(self) -> list:
+        records = []
+        try:
+            if self.history_path.exists():
+                with open(self.history_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            item = json.loads(line)
+                        except Exception:
+                            continue
+                        if isinstance(item, dict) and item.get("file"):
+                            records.append(item)
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 读取出图历史失败: {e}")
+        latest = {}
+        for item in records:
+            latest[item["file"]] = item
+        return list(latest.values())
+
+    async def _record_generation(self, filename: str, prompt: str, source: str,
+                                 lora_selections=None, event=None):
+        """成功出图后追加一条出图历史（异步，不阻塞主流程）"""
+        entry = {
+            "file": filename,
+            "ts": int(time.time()),
+            "prompt": str(prompt or ""),
+            "workflow": getattr(getattr(self, "api", None), "wf_filename", "") or "",
+            "width": getattr(getattr(self, "api", None), "width", None),
+            "height": getattr(getattr(self, "api", None), "height", None),
+            "loras": [str(x) for x in (lora_selections or []) if str(x).strip()] if isinstance(lora_selections, (list, tuple, set)) else [],
+            "source": str(source or ""),
+            "user": "",
+        }
+        try:
+            if event is not None:
+                getter = getattr(event, "get_sender_id", None)
+                if callable(getter):
+                    entry["user"] = str(getter() or "")
+                name_getter = getattr(event, "get_sender_name", None)
+                if callable(name_getter):
+                    entry["user"] = f"{entry['user']} {name_getter() or ''}".strip()
+        except Exception:
+            pass
+        try:
+            async with self._page_lock:
+                with open(self.history_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 写入出图历史失败: {e}")
+
+    async def page_status(self):
+        api = getattr(self, "api", None)
+        data = {
+            "server": getattr(api, "url", "") or "",
+            "workflow": getattr(api, "wf_filename", "") or "",
+            "width": getattr(api, "width", None),
+            "height": getattr(api, "height", None),
+            "total_images": self._count_output_images(),
+            "comfy_alive": None,
+        }
+        if api and getattr(api, "url", None):
+            try:
+                import aiohttp
+
+                async def _probe():
+                    timeout = aiohttp.ClientTimeout(total=2.5)
+                    async with aiohttp.ClientSession(timeout=timeout) as sess:
+                        async with sess.get(f"{api.url}/system_stats") as resp:
+                            return resp.status == 200
+
+                data["comfy_alive"] = await _probe()
+            except Exception:
+                data["comfy_alive"] = False
+        return {"status": "ok", "data": data}
+
+    def _count_output_images(self) -> int:
+        try:
+            return sum(1 for p in self._persisted_output_dir().iterdir() if p.is_file())
+        except Exception:
+            return 0
+
+    async def page_history(self):
+        params = await self._page_params()
+        try:
+            limit = max(1, min(2000, int(params.get("limit", 600))))
+        except Exception:
+            limit = 600
+        output_dir = self._persisted_output_dir()
+        by_file = {}
+        for item in self._read_history_records():
+            f = output_dir / str(item.get("file", ""))
+            if f.is_file():
+                by_file[str(item["file"])] = item
+        try:
+            for p in output_dir.iterdir():
+                if p.is_file() and p.name not in by_file:
+                    by_file[p.name] = {
+                        "file": p.name,
+                        "ts": int(p.stat().st_mtime),
+                        "prompt": "",
+                        "workflow": "",
+                        "width": None,
+                        "height": None,
+                        "loras": [],
+                        "source": "",
+                        "user": "",
+                    }
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 扫描 output 目录失败: {e}")
+        items = sorted(by_file.values(), key=lambda x: x.get("ts") or 0, reverse=True)
+        total = len(items)
+        items = items[:limit]
+        for item in items:
+            if not item.get("ts"):
+                try:
+                    item["ts"] = int((output_dir / item["file"]).stat().st_mtime)
+                except Exception:
+                    item["ts"] = 0
+        return {"status": "ok", "data": {"total": total, "items": items}}
+
+    async def page_thumb(self):
+        params = await self._page_params()
+        file = params.get("file", "")
+        path = self._safe_output_image(file)
+        if path is None:
+            return {"status": "error", "message": "图片不存在"}
+        size = 512
+        try:
+            size = max(64, min(1024, int(params.get("size", 512))))
+        except Exception:
+            pass
+        thumb_path = self.thumb_dir / (path.stem + f"_{size}.jpg")
+        mime = "image/jpeg"
+        try:
+            if not (thumb_path.exists() and thumb_path.stat().st_mtime >= path.stat().st_mtime):
+                self.thumb_dir.mkdir(exist_ok=True)
+                if HAS_PIL:
+                    with PILImage.open(path) as im:
+                        im = im.convert("RGB")
+                        im.thumbnail((size, size))
+                        im.save(thumb_path, "JPEG", quality=82)
+                else:
+                    thumb_path = path
+                    mime = "image/png"
+            payload = thumb_path.read_bytes()
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 生成缩略图失败 {file}: {e}")
+            try:
+                payload = path.read_bytes()
+                mime = "image/png"
+            except Exception:
+                return {"status": "error", "message": "读取图片失败"}
+        import base64
+        return {"status": "ok", "data": {"data_url": f"data:{mime};base64," + base64.b64encode(payload).decode("ascii")}}
+
+    async def page_image(self):
+        params = await self._page_params()
+        path = self._safe_output_image(params.get("file", ""))
+        if path is None:
+            return {"status": "error", "message": "图片不存在"}
+        try:
+            payload = path.read_bytes()
+        except Exception:
+            return {"status": "error", "message": "读取图片失败"}
+        import base64
+        mime = "image/png"
+        suffix = path.suffix.lower()
+        if suffix in (".jpg", ".jpeg"):
+            mime = "image/jpeg"
+        elif suffix == ".webp":
+            mime = "image/webp"
+        elif suffix == ".gif":
+            mime = "image/gif"
+        return {"status": "ok", "data": {"data_url": f"data:{mime};base64," + base64.b64encode(payload).decode("ascii")}}
+
+    async def page_workflows(self):
+        items = []
+        try:
+            names = self._selectable_workflow_names()
+            for name in names:
+                p = self.workflow_dir / name
+                if p.is_file():
+                    items.append({"file": name, "size": p.stat().st_size, "mtime": int(p.stat().st_mtime)})
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 列出工作流失败: {e}")
+        current = getattr(getattr(self, "api", None), "wf_filename", "") or ""
+        return {"status": "ok", "data": {"current": current, "items": items}}
+
+    async def page_switch_workflow(self):
+        body = await self._page_body()
+        file = str(body.get("file", "")).strip()
+        if not file or "/" in file or "\\" in file or ".." in file or not file.endswith(".json"):
+            return {"status": "error", "message": "无效的工作流文件名"}
+        api = getattr(self, "api", None)
+        if not api:
+            return {"status": "error", "message": "ComfyUI API 未初始化"}
+        target = self.workflow_dir / file
+        if not target.is_file():
+            return {"status": "error", "message": "工作流文件不存在"}
+        try:
+            exists, msg = api.reload_config(file)
+        except Exception as e:
+            return {"status": "error", "message": f"切换失败: {e}"}
+        logger.info(f"[ComfyUI] 视图页切换工作流 -> {file} (exists={exists})")
+        return {"status": "ok", "data": {"exists": exists, "message": msg}}
+
+    async def page_delete(self):
+        body = await self._page_body()
+        file = str(body.get("file", "")).strip()
+        path = self._safe_output_image(file)
+        if path is None:
+            return {"status": "error", "message": "图片不存在"}
+        try:
+            path.unlink()
+        except Exception as e:
+            return {"status": "error", "message": f"删除图片失败: {e}"}
+        try:
+            if self.thumb_dir.exists():
+                for t in self.thumb_dir.glob(path.stem + "_*.jpg"):
+                    try:
+                        t.unlink()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            async with self._page_lock:
+                records = self._read_history_records()
+                records = [r for r in records if str(r.get("file")) != file]
+                tmp = self.history_path.with_suffix(".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    for r in records:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                tmp.replace(self.history_path)
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 清理出图历史失败: {e}")
+        return {"status": "ok", "data": {"deleted": file}}
 
     # ====== 核心绘图逻辑 ======
     async def _handle_paint_logic(self, event: AstrMessageEvent, direct_send: bool):
@@ -2551,6 +2960,64 @@ class ComfyUIPlugin(Star):
         if supplemented_entries:
             cleaned_entries = cleaned_entries + supplemented_entries
         if not cleaned_entries:
+            # 诊断日志：本轮没有可用提示词，绘图链路就此静默结束。
+            # 这里必须留下痕迹，否则「调用多次但没有图」在日志里完全不可见。
+            preview = re.sub(r"\s+", " ", cleaned_text).strip()[:40]
+            raw_tag_count = len(self._find_pic_prompt_matches(full_text))
+            if raw_tag_count:
+                logger.info(
+                    "[ComfyUI] ⏭️ 本轮回复含 %s 个 <pic> 标签但均不可用（过短或占位符），跳过绘图 | 正文: %s",
+                    raw_tag_count,
+                    preview,
+                )
+            elif "<pic" in full_text.lower():
+                logger.info(
+                    "[ComfyUI] ⏭️ 本轮回复出现 <pic 字样但未解析出可用提示词，跳过绘图 | 正文: %s",
+                    preview,
+                )
+            else:
+                logger.info(
+                    '[ComfyUI] ⏭️ 本轮回复未输出 <pic prompt="...">，跳过绘图'
+                    "｜强制兜底 force_draw_when_no_prompt=%s | 正文: %s",
+                    self.force_draw_when_no_prompt,
+                    preview,
+                )
+
+            # 意图触发兜底：用户消息明确要求画图，但模型没有输出 <pic> 标签
+            # （R18 内容在部分 provider 的可见文本层被拦截时会出现这种情况）。
+            # 第一优先级：模型 think 里已规划好的 tags，直接采用（画面与模型意图一致，免二次调用）；
+            # think 里也没有 → 才用一次独立的 LLM 调用补齐 <pic> 标签。
+            if self._user_requests_draw(event):
+                reasoning_text = getattr(resp, "reasoning_content", None) or ""
+                think_blocks = re.findall(
+                    r"oppablethink>(.*?)</think>",
+                    full_text or "",
+                    flags=re.DOTALL | re.IGNORECASE,
+                )
+                combined_think = reasoning_text + "\n" + "\n".join(think_blocks)
+                think_tags = self._extract_tags_from_reasoning(combined_think)
+                if think_tags:
+                    logger.info(
+                        "[ComfyUI] 🧠 think 内已有规划 tags，直接采用（与模型意图一致）: %s",
+                        think_tags[-1][:80],
+                    )
+                    cleaned_entries = [{"prompt": think_tags[-1], "lora_selections": []}]
+                else:
+                    logger.info(
+                        "[ComfyUI] 🎯 用户消息含画图请求但模型未输出 <pic> 且 think 无 tags，启用兜底补画 | 用户消息: %s",
+                        (event.message_str or "")[:50],
+                    )
+                    intent_entries = await self._generate_force_draw_prompt_entries(
+                        event,
+                        cleaned_text,
+                        None,
+                        force=True,
+                    )
+                    if intent_entries:
+                        cleaned_entries = intent_entries
+
+        if not cleaned_entries:
+            # 免底也没拿到提示词 → 维持原行为：只发文本回复，不出图。
             if cleaned_text != full_text:
                 resp.completion_text = cleaned_text
                 resp.result_chain = MessageChain().message(cleaned_text)
@@ -2558,6 +3025,11 @@ class ComfyUIPlugin(Star):
 
         # 清理文本供其他插件使用（移除 <pic>、<think>、<ctx> 标签）
         event.set_extra("comfy_cleaned_text", cleaned_text)
+        # 人设锚点：用户要求画「你自己」时强制注入人设 tags，统一覆盖 <pic>/think/兜底三条来源。
+        try:
+            cleaned_entries = self._enforce_self_draw_anchor(event, cleaned_entries)
+        except Exception as anchor_err:
+            logger.warning(f"[ComfyUI] 人设锚点注入失败，使用原始 prompt: {anchor_err}")
 
         cleaned_prompts = [item["prompt"] for item in cleaned_entries]
         use_multi_image_mode = self._should_use_multi_image_mode(len(cleaned_entries))
@@ -2842,6 +3314,9 @@ class ComfyUIPlugin(Star):
                 fp.write(img_data)
 
             logger.info(f"[ComfyUI] ✅ 异步图片已保存: {img_filename}")
+            asyncio.create_task(
+                self._record_generation(img_filename, prompt, "LLM 自动绘图", lora_selections, event)
+            )
 
             image_component = Image.fromFileSystem(str(img_path))
             await event.send(event.chain_result([image_component]))
@@ -2985,6 +3460,9 @@ class ComfyUIPlugin(Star):
 
                     await event.send(event.chain_result([Image.fromFileSystem(str(img_path))]))
                     logger.info(f"[ComfyUI] ✅ [{marker.index}/{prompt_count}] 图片已发送: {img_filename}")
+                    asyncio.create_task(
+                        self._record_generation(img_filename, marker.prompt, f"LLM 多图 图片{marker.index}", marker.lora_selections, event)
+                    )
 
                 except Exception as e:
                     logger.error(f"[ComfyUI] 图片 {marker.index} 处理异常: {e}")
@@ -3002,7 +3480,12 @@ class ComfyUIPlugin(Star):
         logger.info(f"[ComfyUI] ✅ 多图模式发送完成")
     @llm_tool(name="comfyui_txt2img")
     async def comfyui_txt2img(self, event: AstrMessageEvent, ctx: Context = None, prompt: str = None, text: str = None, img_width: int = None, img_height: int = None, direct_send: bool = False) -> MessageEventResult:
-        """ComfyUI 文生图工具"""
+        """ComfyUI 文生图工具，把提示词提交给本地 ComfyUI 工作流生成一张图片。
+
+        Args:
+            prompt(string): 画面提示词，Stable Diffusion / Danbooru 风格英文 tags，半角逗号分隔，例如 1girl, solo, short hair, white hair, expressionless, sitting, looking at viewer
+            direct_send(boolean): 可选。true 时图片以普通消息直发；不填或 false 时以转发卡片发送
+        """
         draw_source = event.get_extra("comfy_draw_source") or "LLM 工具"
         
         # 权限检查
@@ -3104,6 +3587,9 @@ class ComfyUIPlugin(Star):
                 fp.write(img_data)
             
             logger.info(f"[ComfyUI] ✅ 图片已保存: {img_filename}")
+            asyncio.create_task(
+                self._record_generation(img_filename, prompt, draw_source, lora_selections, event)
+            )
             self._clear_draw_failures(event)
             # 工具已经出过图，抑制同一轮回复里 <pic> 标签的二次自动绘图
             event._comfy_auto_painted = True

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ComfyUI 画图</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="page-header">
+      <div class="header-title">
+        <h1>ComfyUI 画图</h1>
+        <span id="statusBadge" class="badge badge-unknown">检测中…</span>
+      </div>
+      <div class="header-actions">
+        <button id="refreshBtn" class="btn btn-ghost" title="刷新">⟳ 刷新</button>
+      </div>
+    </header>
+
+    <section class="card status-card">
+      <div class="status-grid">
+        <div class="status-item"><span class="label">服务器</span><span id="stServer" class="value">—</span></div>
+        <div class="status-item"><span class="label">当前工作流</span><span id="stWorkflow" class="value">—</span></div>
+        <div class="status-item"><span class="label">出图尺寸</span><span id="stSize" class="value">—</span></div>
+        <div class="status-item"><span class="label">出图总数</span><span id="stCount" class="value">—</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>工作流</h2>
+        <span class="hint">点击切换当前工作流</span>
+      </div>
+      <div id="workflowList" class="workflow-list"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>出图历史</h2>
+        <span id="historyMeta" class="hint"></span>
+      </div>
+      <div id="historyGrid" class="history-grid"><div class="empty">加载中…</div></div>
+      <div class="load-more-row">
+        <button id="moreBtn" class="btn btn-ghost" hidden>加载更多</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- 详情抽屉 -->
+  <div id="drawerMask" class="drawer-mask" hidden>
+    <aside class="drawer">
+      <div class="drawer-head">
+        <h3 id="dTime">图片详情</h3>
+        <button id="closeDrawer" class="btn btn-ghost">✕ 关闭</button>
+      </div>
+      <div class="drawer-body">
+        <div class="detail-img-wrap"><img id="dImg" alt="生成图" /></div>
+        <dl class="detail-list">
+          <div class="detail-row"><dt>提示词</dt><dd><div id="dPrompt" class="prompt-text"></div><button id="copyPrompt" class="btn btn-small">复制提示词</button></dd></div>
+          <div class="detail-row"><dt>工作流</dt><dd id="dWorkflow">—</dd></div>
+          <div class="detail-row"><dt>LoRA</dt><dd id="dLora">—</dd></div>
+          <div class="detail-row"><dt>来源</dt><dd id="dSource">—</dd></div>
+          <div class="detail-row"><dt>用户</dt><dd id="dUser">—</dd></div>
+        </dl>
+        <div class="drawer-foot">
+          <a id="dDownload" class="btn btn-ghost" download>下载原图</a>
+          <button id="deleteImg" class="btn btn-danger">删除记录和图片</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
