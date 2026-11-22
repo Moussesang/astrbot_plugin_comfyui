@@ -2337,6 +2337,111 @@ class ComfyUIPlugin(Star):
         logger.info(f"[ComfyUI] 管理员 {user_id} 切换工作流: {filename}")
         yield event.plain_result(f"{status} {msg}")
 
+    @filter.command("comfy_redraw", aliases=["图生图", "comfy_img2img"])
+    async def cmd_comfy_redraw(self, event: AstrMessageEvent):
+        """图生图：把一张图作为画布，交给当前工作流重绘"""
+        draw_source = "指令图生图"
+        allowed, reason = self._check_access(event)
+        if not allowed:
+            yield reason
+            return
+
+        if not getattr(self, "api", None):
+            yield event.plain_result("❌ ComfyUI 服务未连接，请检查配置")
+            return
+
+        image_comp = None
+        for comp in (getattr(event.message_obj, "message", None) or []):
+            if type(comp).__name__ == "Image":
+                image_comp = comp
+                break
+        if image_comp is None:
+            yield event.plain_result(
+                "❌ 没有检测到图片\n"
+                "用法：**同一条消息**里发送 图片 + /comfy_redraw [重绘力度0~1] [画面描述]\n"
+                "示例：/comfy_redraw 0.6 冬季服装，雪景（描述可省略，力度默认 0.55）"
+            )
+            return
+
+        raw = (event.message_str or "").strip()
+        tokens = raw.split()
+        denoise = 0.55
+        if tokens and re.fullmatch(r"0?\.[0-9]+|1\.0*|0", tokens[0]):
+            try:
+                val = float(tokens[0])
+                if 0.05 <= val <= 0.95:
+                    denoise = val
+                    tokens = tokens[1:]
+            except ValueError:
+                pass
+        prompt = " ".join(tokens).strip()
+
+        lora_selections = None
+        if prompt:
+            prompt, lora_selections = self._extract_lora_control_tags(prompt)
+            passed, sensitive = self._check_sensitive(prompt, event)
+            if not passed:
+                tip = "、".join(sensitive[:5])
+                logger.warning(f"[ComfyUI] 用户 {event.get_sender_id()} 触发敏感词: {tip}")
+                yield event.plain_result(f"🚫 检测到敏感词：{tip}，无法生成")
+                return
+            prompt = await self._englishize_prompt(event, prompt)
+            prompt = self._sanitize_positive_prompt(prompt)
+
+        ok, remain = self._check_cooldown(event)
+        if not ok:
+            yield event.plain_result(f"⏱️ 冷却中，请在 {remain} 秒后重试")
+            return
+
+        try:
+            local_path = await image_comp.convert_to_file_path()
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 图生图读取图片失败: {e}")
+            yield event.plain_result(f"❌ 图片读取失败: {str(e)[:60]}")
+            return
+
+        prepared = str(local_path)
+        try:
+            if HAS_PIL:
+                with PILImage.open(local_path) as im:
+                    im = im.convert("RGB")
+                    w, h = im.size
+                    max_side = max(w, h)
+                    if max_side > 1536:
+                        scale = 1536 / max_side
+                        im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), PILImage.LANCZOS)
+                    tmp_path = self.data_dir / "redraw_input.png"
+                    im.save(tmp_path, "PNG")
+                    prepared = str(tmp_path)
+        except Exception as e:
+            logger.warning(f"[ComfyUI] 图片预处理失败，按原图上传: {e}")
+
+        logger.info(f"[ComfyUI] 🖌️ 图生图开始 | 用户: {event.get_sender_id()} | denoise={denoise} | Prompt: {(prompt or '')[:50]}")
+        img_data, error_msg = await self.api.generate_img2img(
+            prompt, prepared, denoise=denoise, lora_selections=lora_selections
+        )
+        if not img_data:
+            logger.error(f"[ComfyUI] 图生图失败: {error_msg}")
+            yield event.plain_result(f"❌ 图生图失败：{error_msg}")
+            return
+
+        img_filename = f"{uuid.uuid4()}.png"
+        img_path = self.output_dir / img_filename
+        with open(img_path, "wb") as fp:
+            fp.write(img_data)
+        logger.info(f"[ComfyUI] ✅ 图生图已保存: {img_filename}")
+        asyncio.create_task(
+            self._record_generation(img_filename, prompt or "（无描述，直接重绘）", draw_source, lora_selections, event)
+        )
+        self._clear_draw_failures(event)
+        image_component = Image.fromFileSystem(str(img_path))
+        self_id = self._get_self_id(event) or "0"
+        forward_node = Node(
+            user_id=int(self_id),
+            nickname="ComfyUI",
+            content=[image_component],
+        )
+        yield event.chain_result([forward_node])
     @filter.command("comfy_save")
     async def cmd_comfy_save(self, event: AstrMessageEvent):
         """保存/导入工作流"""

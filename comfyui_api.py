@@ -1455,6 +1455,184 @@ class ComfyUI:
 
         return override_count
 
+    def _find_vae_node_id(self, workflow):
+        """Locate the node that provides the VAE for image encoding.
+
+        Preference order: the node referenced by a VAEDecode-family "vae" input,
+        otherwise the first VAELoader. Returns a node id string or None."""
+        decode_vae = None
+        vae_loaders = []
+        for nid, node in workflow.items():
+            if not isinstance(node, dict):
+                continue
+            ct = str(node.get("class_type", ""))
+            if ct == "VAELoader":
+                vae_loaders.append(str(nid))
+            if "Decode" not in ct:
+                continue
+            v = (node.get("inputs") or {}).get("vae")
+            if isinstance(v, list) and len(v) == 2:
+                decode_vae = str(v[0])
+        if decode_vae:
+            return decode_vae
+        if vae_loaders:
+            return vae_loaders[0]
+        return None
+
+    def _apply_img2img(self, workflow, image_name, denoise):
+        """Convert a loaded text-to-image workflow into image-to-image in place.
+
+        Adds a LoadImage + VAEEncode pair and repoints every KSampler/
+        KSamplerAdvanced latent_image input at the encoded latent, lowering
+        denoise so the original image survives. Returns
+        (sampler_count, error_message); sampler_count 0 means not eligible."""
+        sampler_ids = []
+        for nid, node in workflow.items():
+            if not isinstance(node, dict):
+                continue
+            ct = str(node.get("class_type", ""))
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            if ct in ("KSampler", "KSamplerAdvanced") and "latent_image" in inputs:
+                sampler_ids.append(str(nid))
+        if not sampler_ids:
+            return 0, "当前工作流没有 KSampler/KSamplerAdvanced 采样节点，无法改造成图生图"
+        vae_id = self._find_vae_node_id(workflow)
+        if not vae_id:
+            return 0, "当前工作流找不到 VAE 来源节点（VAELoader 或解码节点的 vae 输入），无法改造成图生图"
+        load_id = "comfybot_img_load"
+        encode_id = "comfybot_vae_encode"
+        while load_id in workflow:
+            load_id += "x"
+        while encode_id in workflow:
+            encode_id += "x"
+        workflow[load_id] = {"class_type": "LoadImage", "inputs": {"image": image_name}}
+        workflow[encode_id] = {
+            "class_type": "VAEEncode",
+            "inputs": {"pixels": [load_id, 0], "vae": [vae_id, 0]},
+        }
+        try:
+            denoise_val = max(0.05, min(0.95, float(denoise)))
+        except (TypeError, ValueError):
+            denoise_val = 0.55
+        for sid in sampler_ids:
+            node = workflow[sid]
+            node["inputs"]["latent_image"] = [encode_id, 0]
+            if "denoise" in node["inputs"]:
+                node["inputs"]["denoise"] = denoise_val
+        return len(sampler_ids), None
+
+    async def upload_image(self, image_path):
+        """Upload a local image into ComfyUI input directory.
+
+        Returns (server_filename, error_message)."""
+        try:
+            with open(image_path, "rb") as fp:
+                data = fp.read()
+        except Exception as e:
+            return None, f"读取图片失败: {e}"
+        suffix = Path(image_path).suffix.lower()
+        if suffix not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+            suffix = ".png"
+        name = "comfybot_" + "".join(random.choice("0123456789abcdef") for _ in range(8)) + suffix
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("image", data, filename=name, content_type="application/octet-stream")
+                form.add_field("overwrite", "true")
+                async with session.post(f"{self.url}/upload/image", data=form) as resp:
+                    if resp.status != 200:
+                        return None, f"上传图片失败: HTTP {resp.status}"
+                    res = await resp.json()
+                    return res.get("name") or name, None
+        except Exception as e:
+            return None, f"上传图片报错: {e}"
+
+    async def generate_img2img(self, prompt, image_path, denoise=0.55, lora_selections=None):
+        """Generate with an input image: upload it, convert the current
+
+        workflow into image-to-image, then submit and wait like generate()."""
+        up_name, err = await self.upload_image(image_path)
+        if not up_name:
+            return None, err
+
+        try:
+            workflow = self._load_workflow()
+        except Exception as e:
+            return None, str(e)
+
+        resolved_loras = self.resolve_lora_selections(lora_selections) if self.lora_control_enabled else []
+        prompt, injected_hints = self._inject_selected_lora_prompt_hints(str(prompt or ""), resolved_loras)
+        if injected_hints:
+            logger.info(f"[ComfyUI] injected LoRA prompt hints: {', '.join(injected_hints)}")
+        try:
+            self._inject_params(workflow, prompt, resolved_loras)
+        except ValueError as exc:
+            return None, str(exc)
+
+        sampler_count, conv_err = self._apply_img2img(workflow, up_name, denoise)
+        if conv_err:
+            return None, conv_err
+        logger.info(f"[ComfyUI] img2img: uploaded={up_name} denoise={denoise} samplers={sampler_count}")
+
+        client_id = str(random.randint(100000, 999999))
+        async with aiohttp.ClientSession() as session:
+            payload = {"prompt": workflow, "client_id": client_id}
+            try:
+                async with session.post(f"{self.url}/prompt", json=payload) as resp:
+                    if resp.status != 200:
+                        return None, f"连接 ComfyUI 失败: {resp.status}"
+                    res_json = await resp.json()
+                    prompt_id = res_json.get("prompt_id")
+            except Exception as e:
+                return None, f"请求报错: {str(e)}"
+
+            deadline = time.monotonic() + self.gen_timeout
+            while time.monotonic() < deadline:
+                await asyncio.sleep(1)
+                try:
+                    async with session.get(f"{self.url}/history/{prompt_id}") as h_resp:
+                        if h_resp.status != 200:
+                            continue
+                        history = await h_resp.json()
+                except Exception:
+                    continue
+
+                if prompt_id in history:
+                    entry = history.get(prompt_id) or {}
+                    status = entry.get("status") or {}
+                    if status.get("status_str") == "error":
+                        return None, f"工作流执行失败: {status.get('messages') or '未知错误'}"
+                    outputs = entry.get("outputs", {})
+                    img_info = None
+
+                    if self.output_id and self.output_id in outputs:
+                        imgs = outputs[self.output_id].get("images", [])
+                        if imgs:
+                            img_info = imgs[0]
+
+                    if not img_info:
+                        for node_out in outputs.values():
+                            if "images" in node_out and node_out["images"]:
+                                img_info = node_out["images"][0]
+                                break
+
+                    if img_info:
+                        fname = img_info["filename"]
+                        sfolder = img_info["subfolder"]
+                        itype = img_info["type"]
+                        img_url = f"{self.url}/view?filename={fname}&subfolder={sfolder}&type={itype}"
+
+                        async with session.get(img_url) as img_res:
+                            if img_res.status == 200:
+                                return await img_res.read(), None
+                            return None, "下载图片失败"
+
+                    return None, "工作流执行完成，但未找到输出图片"
+
+            return None, f"生成超时（已等待 {self.gen_timeout} 秒仍未完成，可在插件配置 workflow_settings.timeout_seconds 调大）"
+
     async def generate(self, prompt, lora_selections=None):
         """Generate an image with the current workflow."""
         client_id = str(random.randint(100000, 999999))
