@@ -3,5 +3,11 @@
     "comfyui": {
       "title": "ComfyUI 画图"
     }
+  },
+  "pages": {
+    "comfyui": {
+      "title": "ComfyUI 画图",
+      "description": "在 AstrBot WebUI 中浏览历史出图、查看状态与切换工作流。"
+    }
   }
 }

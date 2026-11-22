@@ -46,7 +46,7 @@ class _ComfyImageMarker:
         self.lora_selections = lora_selections or []
 
 @register(
-    "astrbot_plugin_comfyui_pro",  
+    "astrbot_plugin_comfyui",  
     "lumingya",                    
     "ComfyUI Pro 连接器",           
     "1.2.0",
@@ -217,7 +217,7 @@ class ComfyUIPlugin(Star):
         
         if data_path is None:
             current = Path.cwd()
-            data_path = current / "data" / "plugin_data" / "astrbot_plugin_comfyui_pro"
+            data_path = current / "data" / "plugin_data" / "astrbot_plugin_comfyui"
         
         if not isinstance(data_path, Path):
             data_path = Path(data_path)
@@ -1478,7 +1478,7 @@ class ComfyUIPlugin(Star):
             ("page/switch-workflow", self.page_switch_workflow, ["POST"], "ComfyUI 切换工作流"),
             ("page/delete", self.page_delete, ["POST"], "ComfyUI 删除出图记录"),
         )
-        plugin_name = getattr(self, "plugin_name", None) or "astrbot_plugin_comfyui_pro"
+        plugin_name = getattr(self, "plugin_name", None) or "astrbot_plugin_comfyui"
         for endpoint, handler, methods, description in routes:
             route_path = f"/{plugin_name}/{endpoint}"
             try:

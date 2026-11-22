@@ -4,7 +4,7 @@
 
 **把本地 ComfyUI 接进 AstrBot：自然语言出图 · 多工作流热切换 · 让 LLM 当你的分镜导演**
 
-`v2.8.3` · 需要 AstrBot `>= 4.11` · 只认 ComfyUI **API 格式**工作流
+`v2.9.0` · 需要 AstrBot `>= 4.11` · 只认 ComfyUI **API 格式**工作流
 
 </div>
 
@@ -62,7 +62,7 @@ ComfyUI 的工作流是图灵完备的，任何试图把参数抽象成开关的
 把插件放到 AstrBot 的插件目录：
 
 ```
-data/plugins/astrbot_plugin_comfyui_pro/
+data/plugins/astrbot_plugin_comfyui/
 ```
 
 然后在 **仪表盘 → 插件** 里重载一次。首次启动会自动创建数据目录，并把默认模板 `workflow_api.json` 复制进去。
@@ -81,7 +81,7 @@ data/plugins/astrbot_plugin_comfyui_pro/
 
 ### 3. 三分钟跑通
 
-1. 把一个工作流 `.json` 丢进 `data/plugin_data/astrbot_plugin_comfyui_pro/workflow/`
+1. 把一个工作流 `.json` 丢进 `data/plugin_data/astrbot_plugin_comfyui/workflow/`
 2. 重载插件两次（详见 [4.4](#44-让新工作流出现在下拉框)），在下拉框里选中它
 3. 在聊天里发一句 **“帮我画一只在雨夜街头的白猫，赛博朋克风”**
 
@@ -119,7 +119,7 @@ data/plugins/astrbot_plugin_comfyui_pro/
 ### 4.3 放到数据目录
 
 ```
-data/plugin_data/astrbot_plugin_comfyui_pro/workflow/
+data/plugin_data/astrbot_plugin_comfyui/workflow/
 ```
 
 注意是 `plugin_data` 下面，不是插件目录下的 `workflow/`——后者只存默认模板，升级会被覆盖。
@@ -360,7 +360,7 @@ v2.6 已修：正向节点必须同时满足“是文本节点”且“不被任
 从 v2.0 起，所有用户数据都在 `plugin_data` 下，**升级插件不会覆盖**：
 
 ```
-data/plugin_data/astrbot_plugin_comfyui_pro/
+data/plugin_data/astrbot_plugin_comfyui/
 ├── workflow/                     # 你的工作流（放这里）
 │   ├── workflow_api.json         # 插件自带模板，首次安装时复制
 │   ├── my_workflow_api.json      # 你自己导入的
@@ -368,7 +368,7 @@ data/plugin_data/astrbot_plugin_comfyui_pro/
 ├── output/                       # 生成的图片历史
 └── sensitive_words.json          # 敏感词库（可自行修改）
 
-data/plugins/astrbot_plugin_comfyui_pro/   # ⚠️ 插件代码，升级会覆盖
+data/plugins/astrbot_plugin_comfyui/   # ⚠️ 插件代码，升级会覆盖
 ├── main.py
 ├── comfyui_api.py
 ├── _conf_schema.json
@@ -382,6 +382,11 @@ data/plugins/astrbot_plugin_comfyui_pro/   # ⚠️ 插件代码，升级会覆�
 ---
 
 ## 十、更新日志
+
+### v2.9.0
+
+- **插件重命名**：插件注册名与目录统一改为 `astrbot_plugin_comfyui`（去掉 `_pro` 后缀）；data 目录、配置文件与历史数据一并迁移，指令与视图页入口不变。
+- **新增视图页**：WebUI 内置「ComfyUI 画图」画廊——查看状态/历史出图、大图预览、切换工作流、删除图片；出图自动写入历史与缩略图缓存。
 
 ### v2.8.3
 
