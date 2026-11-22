@@ -1096,6 +1096,30 @@ class ComfyUI:
             )
         return pairs
 
+    # --- editor-style workflow support ---
+    _TEXT_INPUT_KEYS = ("text", "opt_text", "string", "text_positive", "positive", "prompt", "wildcard_text")
+
+    def _has_writable_text(self, workflow, node_id):
+        """放宽版文本输入判断：编辑节点（如 Easy_QwenEdit2509）的 prompt 输入也算。"""
+        node = workflow.get(str(node_id)) if node_id else None
+        if not isinstance(node, dict):
+            return False
+        ct = str(node.get("class_type", ""))
+        if ct in ("KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"):
+            return False
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            return False
+        return any(key in inputs for key in self._TEXT_INPUT_KEYS)
+
+    def _is_safe_prompt_node(self, workflow, node_id):
+        """放宽版正向候选校验：可写文本且未被任何采样器当作 negative 使用。"""
+        if not self._has_writable_text(workflow, node_id):
+            return False
+        pairs = self._sampler_link_pairs(workflow)
+        negative_ids = {neg for _, neg in pairs if neg}
+        return str(node_id) not in negative_ids
+
     def _detect_node_ids(self, workflow):
         """Pick prompt/negative/output nodes from the graph when configured ids are stale.
 
@@ -1119,6 +1143,19 @@ class ComfyUI:
                     and self._has_text_input(workflow, nid)
                 ):
                     found["input"] = str(nid)
+                    break
+        if "input" not in found:
+            # 编辑类工作流：正向文本可能来自 Easy_QwenEdit / Kontext 等带 prompt 输入的
+            # 编辑节点，采样器 positive 连线中间隔着 conditioning 包装节点，strict 识别
+            # 找不到时放宽为“有可写文本输入且未被当 negative 使用”的节点。
+            for nid, node in workflow.items():
+                if (
+                    isinstance(node, dict)
+                    and str(nid) not in negative_ids
+                    and self._has_writable_text(workflow, nid)
+                ):
+                    found["input"] = str(nid)
+                    found["input_mode"] = "editor"
                     break
 
         for _, neg in pairs:
@@ -1179,7 +1216,10 @@ class ComfyUI:
 
         if not self._is_positive_text_node(workflow, self.input_id):
             candidate = detected.get("input")
-            if candidate and self._is_positive_text_node(workflow, candidate):
+            if candidate and (
+                self._is_positive_text_node(workflow, candidate)
+                or (detected.get("input_mode") == "editor" and self._is_safe_prompt_node(workflow, candidate))
+            ):
                 if self.input_id and self._has_text_input(workflow, self.input_id):
                     logger.warning(
                         f"[ComfyUI] 配置的正向节点 {self.input_id} 实际是负面提示词节点，"
