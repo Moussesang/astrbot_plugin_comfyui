@@ -385,6 +385,11 @@ data/plugins/astrbot_plugin_comfyui/   # ⚠️ 插件代码，升级会覆盖
 
 ### v2.9.0
 
+### v2.9.1
+
+- 作者署名更新：原作者 lumingya + 维护者 Moussesang；插件 repo 链接指向本仓库。
+
+
 - **插件重命名**：插件注册名与目录统一改为 `astrbot_plugin_comfyui`（去掉 `_pro` 后缀）；data 目录、配置文件与历史数据一并迁移，指令与视图页入口不变。
 - **新增视图页**：WebUI 内置「ComfyUI 画图」画廊——查看状态/历史出图、大图预览、切换工作流、删除图片；出图自动写入历史与缩略图缓存。
 
@@ -459,4 +464,4 @@ data/plugins/astrbot_plugin_comfyui/   # ⚠️ 插件代码，升级会覆盖
 
 ## 许可
 
-见 [LICENSE](LICENSE)。原插件作者 [lumingya](https://github.com/lumingya/astrbot_plugin_comfyui_pro)，本仓库为其维护分支。
+见 [LICENSE](LICENSE)。原插件作者 [lumingya](https://github.com/lumingya/astrbot_plugin_comfyui_pro)，本仓库为其维护分支，当前由 [Moussesang](https://github.com/Moussesang) 维护。

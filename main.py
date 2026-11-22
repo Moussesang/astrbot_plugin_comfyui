@@ -47,10 +47,10 @@ class _ComfyImageMarker:
 
 @register(
     "astrbot_plugin_comfyui",  
-    "lumingya",                    
+    "lumingya, Moussesang",        
     "ComfyUI Pro 连接器",           
     "1.2.0",
-    "https://github.com/lumingya/astrbot_plugin_comfyui_pro" 
+    "https://github.com/Moussesang/astrbot_plugin_comfyui" 
 )
 class ComfyUIPlugin(Star):
     _FORCE_DRAW_CONTEXT_LIMIT = 12
