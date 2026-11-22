@@ -4,7 +4,7 @@
 
 **把本地 ComfyUI 接进 AstrBot：自然语言出图 · 多工作流热切换 · 让 LLM 当你的分镜导演**
 
-`v2.8.1` · 需要 AstrBot `>= 4.11` · 只认 ComfyUI **API 格式**工作流
+`v2.8.2` · 需要 AstrBot `>= 4.11` · 只认 ComfyUI **API 格式**工作流
 
 </div>
 
@@ -383,7 +383,12 @@ data/plugins/astrbot_plugin_comfyui_pro/   # ⚠️ 插件代码，升级会覆�
 
 ## 十、更新日志
 
+### v2.8.2
+
+- **原生图生图工作流适配**：工作流自带 LoadImage 输入节点时（如 K2-Anything2Real 图生三次元），图片直接填入该节点，保留工作流自带提示词与潜空间链路，不再注入 VAEEncode 改造、不改写提示词；用户描述在此类工作流中会被忽略。种子与步数覆盖照常刷新。
+
 ### v2.8.1
+
 
 - **修复编辑类工作流节点识别**：K2-Anything2Real 这类自带 conditioning 包装节点的编辑工作流（正向提示词在 Easy_QwenEdit 等编辑节点的 prompt 输入里，采样器 positive 连线中间隔着包装节点）此前会被误报「没有输入节点」。现在 strict 识别完全失败时放宽为“有可写文本输入且未被任何采样器当作 negative 使用”的节点兜底；常规文生图工作流仍走严格规则，行为不变。
 

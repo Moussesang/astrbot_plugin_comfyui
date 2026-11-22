@@ -1316,8 +1316,12 @@ class ComfyUI:
             return prompt, []
         return ", ".join(kept), removed
 
-    def _inject_params(self, workflow, prompt, lora_selections=None):
+    def _inject_params(self, workflow, prompt, lora_selections=None, write_prompt=True):
         """Inject prompt, optional LoRA selections, steps overrides, and seeds into workflow."""
+        if not write_prompt:
+            # 原生图生图工作流：只刷新种子与步数覆盖，绝不改写工作流自带的提示词。
+            prompt = None
+            lora_selections = None
         self._ensure_node_ids(workflow)
         prompt, removed_negative = self._strip_negative_tags(workflow, prompt)
         if removed_negative:
@@ -1325,31 +1329,32 @@ class ComfyUI:
                 f"[ComfyUI] 已从正向提示词移除 {len(removed_negative)} 个与负面提示词重复的 tag: "
                 + ", ".join(removed_negative)
             )
-        node = workflow.get(self.input_id)
-        if not node:
-            message = (
-                f"工作流 {self.wf_filename} 中没有输入节点 {self.input_id}；"
-                "请检查插件配置里的 input_node_id（正向提示词节点），或把工作流改成 API 格式"
-            )
-            logger.error(f"critical: {message}")
-            raise ValueError(message)
+        if prompt is not None:
+            node = workflow.get(self.input_id)
+            if not node:
+                message = (
+                    f"工作流 {self.wf_filename} 中没有输入节点 {self.input_id}；"
+                    "请检查插件配置里的 input_node_id（正向提示词节点），或把工作流改成 API 格式"
+                )
+                logger.error(f"critical: {message}")
+                raise ValueError(message)
 
-        inputs = node.get("inputs", {})
-        target_keys = [
-            "text",
-            "opt_text",
-            "string",
-            "text_positive",
-            "positive",
-            "prompt",
-            "wildcard_text",
-        ]
-        for key in target_keys:
-            if key in inputs:
-                inputs[key] = prompt
-                break
+            inputs = node.get("inputs", {})
+            target_keys = [
+                "text",
+                "opt_text",
+                "string",
+                "text_positive",
+                "positive",
+                "prompt",
+                "wildcard_text",
+            ]
+            for key in target_keys:
+                if key in inputs:
+                    inputs[key] = prompt
+                    break
 
-        if self.neg_node_id and self.neg_prompt:
+        if prompt is not None and self.neg_node_id and self.neg_prompt:
             neg_node = workflow.get(self.neg_node_id)
             if neg_node:
                 n_inputs = neg_node.get("inputs", {})
@@ -1495,6 +1500,19 @@ class ComfyUI:
 
         return override_count
 
+    def _find_native_image_node(self, workflow):
+        """工作流自带且唯一的 LoadImage 节点 id；没有或多个则返回 None。"""
+        load_ids = [
+            str(nid)
+            for nid, node in workflow.items()
+            if isinstance(node, dict) and str(node.get("class_type", "")) == "LoadImage"
+        ]
+        if len(load_ids) == 1:
+            return load_ids[0]
+        if len(load_ids) > 1:
+            logger.info(f"[ComfyUI] 工作流含 {len(load_ids)} 个 LoadImage 节点，退回通用 img2img 改造")
+        return None
+
     def _find_vae_node_id(self, workflow):
         """Locate the node that provides the VAE for image encoding.
 
@@ -1602,19 +1620,30 @@ class ComfyUI:
         except Exception as e:
             return None, str(e)
 
-        resolved_loras = self.resolve_lora_selections(lora_selections) if self.lora_control_enabled else []
-        prompt, injected_hints = self._inject_selected_lora_prompt_hints(str(prompt or ""), resolved_loras)
-        if injected_hints:
-            logger.info(f"[ComfyUI] injected LoRA prompt hints: {', '.join(injected_hints)}")
-        try:
-            self._inject_params(workflow, prompt, resolved_loras)
-        except ValueError as exc:
-            return None, str(exc)
+        native_image_id = self._find_native_image_node(workflow)
+        if native_image_id:
+            # 原生图生图工作流（自带 LoadImage，如 K2 图生三次元）：只把图片填进
+            # 工作流自带的输入节点，保留其自带提示词与潜空间链路。
+            node_inputs = workflow[native_image_id].setdefault("inputs", {})
+            node_inputs["image"] = up_name
+            if str(prompt or "").strip():
+                logger.info(f"[ComfyUI] 原生图生图工作流，忽略用户描述: {(prompt or '')[:60]}")
+            logger.info(f"[ComfyUI] img2img: 原生模式，图片填入 LoadImage 节点 {native_image_id}")
+            self._inject_params(workflow, None, None, write_prompt=False)
+        else:
+            resolved_loras = self.resolve_lora_selections(lora_selections) if self.lora_control_enabled else []
+            prompt, injected_hints = self._inject_selected_lora_prompt_hints(str(prompt or ""), resolved_loras)
+            if injected_hints:
+                logger.info(f"[ComfyUI] injected LoRA prompt hints: {', '.join(injected_hints)}")
+            try:
+                self._inject_params(workflow, prompt, resolved_loras)
+            except ValueError as exc:
+                return None, str(exc)
 
-        sampler_count, conv_err = self._apply_img2img(workflow, up_name, denoise)
-        if conv_err:
-            return None, conv_err
-        logger.info(f"[ComfyUI] img2img: uploaded={up_name} denoise={denoise} samplers={sampler_count}")
+            sampler_count, conv_err = self._apply_img2img(workflow, up_name, denoise)
+            if conv_err:
+                return None, conv_err
+            logger.info(f"[ComfyUI] img2img: uploaded={up_name} denoise={denoise} samplers={sampler_count}")
 
         client_id = str(random.randint(100000, 999999))
         async with aiohttp.ClientSession() as session:
