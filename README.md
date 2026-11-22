@@ -388,7 +388,7 @@ data/plugins/astrbot_plugin_comfyui/   # ⚠️ 插件代码，升级会覆盖
 ### v2.9.1
 
 - 作者署名更新：原作者 lumingya + 维护者 Moussesang；插件 repo 链接指向本仓库。
-- 
+
 ### v2.9.0
 
 - **插件重命名**：插件注册名与目录统一改为 `astrbot_plugin_comfyui`（去掉 `_pro` 后缀）；data 目录、配置文件与历史数据一并迁移，指令与视图页入口不变。
