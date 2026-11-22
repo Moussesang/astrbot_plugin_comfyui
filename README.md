@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎨 AstrBot Plugin · ComfyUI Pro
+# 🎨 AstrBot Plugin · ComfyUI 
 
 **把本地 ComfyUI 接进 AstrBot：自然语言出图 · 多工作流热切换 · 让 LLM 当你的分镜导演**
 
