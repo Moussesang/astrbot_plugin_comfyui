@@ -215,6 +215,7 @@ AstrBot 的配置项有缓存，新文件不会立刻出现在下拉框里。按
 | `/comfy_save <文件名> <JSON>` | 管理员 | 直接粘贴 JSON 内容导入工作流 |
 | `/comfy_add <节点ID> <步数>` | 管理员 | 按节点 ID 覆盖步数，见 [7.3](#73-步数覆盖) |
 | `/comfy_lock on\|off\|status` | 管理员 | 动态开关全局锁定 |
+| `/comfy_wl list\|add\|del\|clear` <br> 别名 `/白名单` `/comfy_whitelist` | 管理员 | 管理群白名单：list 查看（标出本群）；add/del 可一次多个群号，群内使用可省略群号默认本群；clear 清空。改动即时生效并写回配置文件 |
 | `/违禁级别 <none\|lite\|full>` | 管理员 | 设置当前群的敏感词等级 |
 
 `/当前工作流` 的输出长这样：
@@ -297,7 +298,7 @@ AstrBot 的配置项有缓存，新文件不会立刻出现在下拉框里。按
 | 配置项 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `admin_ids` | 空 | 管理员 QQ 号列表 |
-| `whitelist_group_ids` | 空 | 允许使用的群号列表。**留空 = 所有群都不允许**（私聊不受此限制） |
+| `whitelist_group_ids` | 空 | 允许使用的群号列表。**留空 = 所有群都不允许**（私聊不受此限制）。可用 `/comfy_wl` 指令动态增删，改动即时写回此配置 |
 | `cooldown_seconds` | `35` | 每个用户的冷却时间 |
 | `default_group_policy` | `lite` | 白名单群的默认敏感词等级 |
 | `default_private_policy` | `lite` | 私聊的默认敏感词等级 |
@@ -384,6 +385,10 @@ data/plugins/astrbot_plugin_comfyui/   # ⚠️ 插件代码，升级会覆盖
 ## 十、更新日志
 
 
+
+### v2.9.2
+
+- **新增群白名单管理指令 `/comfy_wl`**：管理员可直接在 QQ 端维护群白名单——`/comfy_wl` 查看当前列表（标出本群）、`/comfy_wl add [群号...]` 添加（支持一次多个、全角逗号，群内使用可省略群号默认本群）、`/comfy_wl del [群号...]` 移除、`/comfy_wl clear` 清空。改动即时生效，无需重载插件，并自动写回配置文件持久化。
 
 ### v2.9.1
 

@@ -47,7 +47,7 @@ class _ComfyImageMarker:
 
 @register(
     "astrbot_plugin_comfyui",  
-    "lumingya, Moussesang",        
+    "lumingya, Moussesang",
     "ComfyUI Pro 连接器",           
     "1.2.0",
     "https://github.com/Moussesang/astrbot_plugin_comfyui" 
@@ -1883,6 +1883,7 @@ class ComfyUIPlugin(Star):
                 "  /comfy_save            导入新工作流",
                 "  /comfy_add             步数覆盖（按节点ID）",
                 "  /comfy_lock on|off     切换全局锁定",
+                "  /comfy_wl              群白名单管理",
                 "  /违禁级别              设置群敏感度",
                 ""
             ])
@@ -2230,6 +2231,91 @@ class ComfyUIPlugin(Star):
 
         yield event.plain_result("❌ 参数无效，用法：/comfy_lock on|off|status")
 
+    @filter.command("comfy_wl", aliases=["白名单", "comfy_whitelist"])
+    async def cmd_comfy_wl(self, event: AstrMessageEvent):
+        """管理员管理绘图群白名单（list/add/del/clear）"""
+        user_id = str(event.get_sender_id())
+        if user_id not in self.admin_user_ids:
+            yield event.plain_result("🚫 权限不足，仅管理员可管理白名单")
+            return
+        
+        args = event.message_str.split()
+        action = args[1].lower() if len(args) > 1 else "list"
+        gid_here = str(self._get_group_id(event) or "")
+        
+        def _save_whitelist():
+            control = self.config.setdefault("control", {})
+            control["whitelist_group_ids"] = sorted(self.whitelist_group_ids)
+            save = getattr(self.config, "save_config", None)
+            if callable(save):
+                save()
+        
+        def _parse_ids(tokens):
+            ids = []
+            for t in tokens:
+                for part in str(t).replace("，", " ").replace(",", " ").split():
+                    if part.isdigit():
+                        ids.append(part)
+            return ids
+        
+        if action in ("list", "状态", "查询", "show"):
+            groups = sorted(self.whitelist_group_ids)
+            if not groups:
+                yield event.plain_result("🏠 群白名单为空（所有群不可用绘图，管理员可绕过）")
+                return
+            rows = ["🏠 群白名单（共 %d 个）" % len(groups), "━━━━━━━━━━━━━━━━━━"]
+            for i, g in enumerate(groups, 1):
+                rows.append(f"  {i}. {g}" + ("（本群）" if g == gid_here else ""))
+            rows.append("用法: /comfy_wl add|del [群号...] ，/comfy_wl clear")
+            yield event.plain_result("\n".join(rows))
+            return
+        
+        if action in ("add", "添加", "加入"):
+            ids = _parse_ids(args[2:])
+            if not ids:
+                if gid_here:
+                    ids = [gid_here]
+                else:
+                    yield event.plain_result("❌ 请提供群号，用法：/comfy_wl add 群号1 群号2 ...（群内使用可不填，默认本群）")
+                    return
+            added = [i for i in ids if i not in self.whitelist_group_ids]
+            for i in added:
+                self.whitelist_group_ids.add(i)
+            _save_whitelist()
+            logger.info(f"[ComfyUI] 管理员 {user_id} 添加群白名单: {added}")
+            if added:
+                yield event.plain_result("✅ 已加入白名单：" + "、".join(added) + f"（现共 {len(self.whitelist_group_ids)} 个群）")
+            else:
+                yield event.plain_result("ℹ️ 这些群已在白名单中：" + "、".join(ids))
+            return
+        
+        if action in ("del", "remove", "rm", "删除", "移除"):
+            ids = _parse_ids(args[2:])
+            if not ids:
+                if gid_here:
+                    ids = [gid_here]
+                else:
+                    yield event.plain_result("❌ 请提供群号，用法：/comfy_wl del 群号1 ...（群内使用可不填，默认本群）")
+                    return
+            removed = [i for i in ids if i in self.whitelist_group_ids]
+            for i in removed:
+                self.whitelist_group_ids.discard(i)
+            _save_whitelist()
+            logger.info(f"[ComfyUI] 管理员 {user_id} 移除群白名单: {removed}")
+            if removed:
+                yield event.plain_result("✅ 已移出白名单：" + "、".join(removed) + f"（现共 {len(self.whitelist_group_ids)} 个群）")
+            else:
+                yield event.plain_result("ℹ️ 这些群本就不在白名单中：" + "、".join(ids))
+            return
+        
+        if action in ("clear", "清空"):
+            self.whitelist_group_ids.clear()
+            _save_whitelist()
+            logger.warning(f"[ComfyUI] 管理员 {user_id} 清空了群白名单")
+            yield event.plain_result("✅ 白名单已清空（管理员仍可绕过白名单使用）")
+            return
+        
+        yield event.plain_result("❌ 参数无效，用法：/comfy_wl list|add|del|clear [群号...]")
     @filter.command("comfy_ls")
     async def cmd_comfy_list(self, event: AstrMessageEvent):
         """列出当前所有可用工作流"""
