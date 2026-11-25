@@ -224,10 +224,50 @@
     if (!window.confirm("删除图片 " + (item.file || "") + " 及其记录？不可恢复。")) return;
     apiPost("page/delete", { file: item.file }).then(function () {
       toast("已删除");
+      // 增量移除：不重置列表与「加载更多」状态，保持滚动位置
+      var idx = -1;
+      for (var i = 0; i < state.history.length; i++) {
+        if (state.history[i].file === item.file) { idx = i; break; }
+      }
+      if (idx >= 0) {
+        state.history.splice(idx, 1);
+        state.total = Math.max(0, state.total - 1);
+        state.shown = Math.max(0, state.shown - 1);
+        var cells = $("historyGrid").querySelectorAll(".h-cell");
+        if (cells[idx]) cells[idx].remove();
+      }
+      $("historyMeta").textContent = "共 " + state.total + " 张";
+      if (!state.history.length) {
+        $("historyGrid").innerHTML = '<div class="empty">暂无出图记录</div>';
+        $("moreBtn").hidden = true;
+      }
       closeDrawer();
-      loadHistory();
       loadStatus();
     }).catch(function (e) { toast("删除失败：" + (e.message || e)); });
+  }
+
+  /* ---------- 全屏查看 ---------- */
+  function ensureLightbox() {
+    var lb = $("lightbox");
+    if (lb) return lb;
+    lb = document.createElement("div");
+    lb.id = "lightbox";
+    lb.hidden = true;
+    lb.innerHTML = '<img alt="预览图" />';
+    document.body.appendChild(lb);
+    lb.addEventListener("click", function () {
+      lb.hidden = true;
+      lb.querySelector("img").src = "";
+    });
+    return lb;
+  }
+
+  function openLightbox() {
+    var src = $("dImg").src;
+    if (!src) return;
+    var lb = ensureLightbox();
+    lb.querySelector("img").src = src;
+    lb.hidden = false;
   }
 
   function escapeHtml(s) {
@@ -261,6 +301,9 @@
     });
     $("copyPrompt").addEventListener("click", copyPrompt);
     $("deleteImg").addEventListener("click", deleteCurrent);
+    var dImg = $("dImg");
+    dImg.title = "点击查看大图";
+    dImg.addEventListener("click", openLightbox);
   }
 
   function applyTheme(ctx) {
